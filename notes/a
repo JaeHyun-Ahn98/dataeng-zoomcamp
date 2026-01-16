@@ -1,0 +1,37 @@
+# 🔧 강의처럼 하려면 (네트워크 문제 해결)
+
+# ❌ 현재 실패하는 명령어
+docker run -it --rm --network=pg-network taxi_ingest:v001 --pg_user=root --pg_pass=root --pg_host=localhost --pg_port=5432 --pg_db=ny_taxi --target_table=yellow_taxi_trips_2021_1 --year=2021 --month=1 --chunksize=100000
+
+# ✅ 강의 방식대로 수정한 명령어들
+
+# 1단계: 기존 PostgreSQL 컨테이너 중지/삭제
+docker stop pgdatabase
+docker rm pgdatabase
+
+# 2단계: PostgreSQL을 pg-network에 연결해서 실행
+docker run -it --rm \
+  -e POSTGRES_USER="root" \
+  -e POSTGRES_PASSWORD="root" \
+  -e POSTGRES_DB="ny_taxi" \
+  -v ny_taxi_postgres_data:/var/lib/postgresql \
+  -p 5432:5432 \
+  --network=pg-network \
+  --name pgdatabase \
+  postgres:18
+
+# 3단계: 데이터 ingest 실행 (호스트명을 컨테이너 이름으로)
+docker run --rm \
+  --network=pg-network \
+  taxi_ingest:v001 \
+  --pg_user=root \
+  --pg_pass=root \
+  --pg_host=pgdatabase \
+  --pg_port=5432 \
+  --pg_db=ny_taxi \
+  --target_table=yellow_taxi_trips_2021_1 \
+  --chunksize=100000
+
+
+
+   docker run -it --rm -e POSTGRES_USER="root" -e POSTGRES_PASSWORD="root" -e POSTGRES_DB="ny_taxi" -v ny_taxi_postgres_data:/var/lib/postgresql -p 5432:5432 --network=pg-network --name=pgdatabase postgres:18

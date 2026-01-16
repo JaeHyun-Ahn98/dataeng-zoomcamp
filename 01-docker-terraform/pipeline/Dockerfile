@@ -19,9 +19,9 @@ COPY pyproject.toml .python-version uv.lock ./
 RUN uv sync --locked 
 
 # 호스트의 pipeline.py 파일을 컨테이너의 현재 작업 디렉토리(/code)로 복사합니다.
-COPY pipeline.py . 
+COPY ingest_data.py . 
 
 # 컨테이너가 시작될 때 항상 'python pipeline.py' 명령을 실행하도록 지정합니다.
 # PATH 환경 변수에 가상 환경 경로가 추가되었으므로, 'uv run' 없이도 가상 환경의 파이썬이 실행됩니다.
 # 'docker run' 뒤에 오는 인자들은 이 ENTRYPOINT 명령의 추가 인자로 전달됩니다.
-ENTRYPOINT ["python", "pipeline.py"] 
+ENTRYPOINT ["python", "ingest_data.py"] 
