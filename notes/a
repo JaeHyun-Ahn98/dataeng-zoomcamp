@@ -22,7 +22,7 @@ docker run -it --rm \
 
 # 3단계: 데이터 ingest 실행 (호스트명을 컨테이너 이름으로)
 docker run --rm \
-  --network=pg-network \
+  --network=pipeline_default \
   taxi_ingest:v001 \
   --pg_user=root \
   --pg_pass=root \
@@ -32,6 +32,41 @@ docker run --rm \
   --target_table=yellow_taxi_trips_2021_1 \
   --chunksize=100000
 
+# 💡 메모: pg-network를 수동으로 생성한 경우
+# docker-compose.yaml 파일에서 networks: 섹션을 완전히 제거하세요
+# Docker Compose가 자동으로 네트워크를 생성하여 충돌을 방지합니다
+
+docker run -it \
+  -e PGADMIN_DEFAULT_EMAIL="admin@admin.com" \
+  -e PGADMIN_DEFAULT_PASSWORD="root" \
+  -v pgadmin_data:/var/lib/pgadmin \
+  -p 8085:80 \
+  --network=pg-network \
+  --name pgadmin \
+  dpage/pgadmin4
 
 
-   docker run -it --rm -e POSTGRES_USER="root" -e POSTGRES_PASSWORD="root" -e POSTGRES_DB="ny_taxi" -v ny_taxi_postgres_data:/var/lib/postgresql -p 5432:5432 --network=pg-network --name=pgdatabase postgres:18
+# 🚀 재부팅 후 데이터 파이프라인 재시작 가이드
+# ===========================================
+
+# 1단계: Docker Desktop 실행 확인
+# - Docker Desktop이 실행 중인지 확인
+# - 실행 중이 아니면 Docker Desktop 시작
+
+# 2단계: 프로젝트 디렉토리로 이동
+cd c:\dataeng-zoomcamp\01-docker-terraform\pipeline
+
+# 3단계: Docker 네트워크 생성 (없으면)
+docker network create pg-network
+
+# 4단계: PostgreSQL 컨테이너 실행
+docker run -it --rm \
+  -e POSTGRES_USER="root" \
+  -e POSTGRES_PASSWORD="root" \
+  -e POSTGRES_DB="ny_taxi" \
+  -v ny_taxi_postgres_data:/var/lib/postgresql \
+  -p 5432:5432 \
+  --network=pg-network \
+  --name=pgdatabase \
+  postgres:18
+
