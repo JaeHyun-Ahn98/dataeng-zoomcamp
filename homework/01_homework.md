@@ -23,7 +23,6 @@
 **확인 명령어:**
 ```bash
 docker run --rm python:3.13 pip --version
-# 출력: pip 25.3 from /usr/local/lib/python3.13/site-packages/pip (python 3.13)
 ```
 
 ---
