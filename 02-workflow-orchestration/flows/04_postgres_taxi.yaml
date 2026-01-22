@@ -32,7 +32,7 @@ tasks:                                      # 워크플로우 실행 태스크�
   - id: set_label                             # [라벨 설정] 실행에 라벨 추가 (여러번 실행했을때 로그를 보지않아도 한눈에 모든 정보 확인 가능)
     type: io.kestra.plugin.core.execution.Labels  # 실행 라벨 플러그인
     labels:                                   # 추가할 라벨들
-      file: "{{render(vars.file)}}"           # 파일명 라벨
+      file: "{{render(vars.file)}}"           # 파일명 라벨 / render() = 표현식이 실제값으로 변환된채로 가져옴
       taxi: "{{inputs.taxi}}"                 # 택시 타입 라벨
 
   - id: extract                               # [EXTRACT] 데이터 다운로드

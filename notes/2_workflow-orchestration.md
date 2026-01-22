@@ -451,21 +451,95 @@ Raw Data → Load to DB → Transform in DB → Clean Data
 - **Variables**: 동적 파일명/테이블명 생성
 - **Tasks**: Extract → 조건분기 → Load/Transform (복합 단계)
 
-**각 단계 역할:**
+##### 전체 워크플로우 진행 순서
+
+**Phase 1: 준비 및 다운로드**
 ```yaml
-# Extract: 뉴욕 택시 CSV 데이터 다운로드
+# 라벨 설정: 실행 추적용 메타데이터 추가
+- id: set_label
+  type: io.kestra.plugin.core.execution.Labels
+  labels:
+    file: "{{render(vars.file)}}"  # 처리할 파일명
+    taxi: "{{inputs.taxi}}"        # 택시 타입
+
+# 데이터 다운로드: 뉴욕 택시 CSV 파일 가져오기
 - id: extract
-  # wget으로 GitHub에서 CSV.gz 파일 다운로드
+  type: io.kestra.plugin.scripts.shell.Commands
+  commands:
+    - wget -qO- https://github.com/.../{{render(vars.file)}}.gz | gunzip > {{render(vars.file)}}
+```
 
-# Load: PostgreSQL에 원본 데이터 저장
-- id: yellow_copy_in_to_staging_table
-  type: io.kestra.plugin.jdbc.postgresql.CopyIn
-  # CSV → 임시 테이블 (변환 없이 그대로 저장)
+**Phase 2: 조건분기 - Yellow Taxi 처리**
+```yaml
+# 조건문: 택시 타입이 yellow인 경우에만 실행
+- id: if_yellow_taxi
+  type: io.kestra.plugin.core.flow.If
+  condition: "{{inputs.taxi == 'yellow'}}"
+  then:
+    # 2.1 메인 테이블 생성
+    - id: yellow_create_table
+      # CREATE TABLE IF NOT EXISTS yellow_tripdata (...)
 
-# Transform: DB에서 데이터 변환 및 최종 저장
-- id: yellow_merge_data
-  type: io.kestra.plugin.jdbc.postgresql.Queries
-  # MERGE INTO 쿼리로 중복 제거 및 메인 테이블 저장
+    # 2.2 스테이징 테이블 생성
+    - id: yellow_create_staging_table
+      # CREATE TABLE IF NOT EXISTS yellow_tripdata_staging (...)
+
+    - id: yellow_truncate_staging_table
+      # TRUNCATE TABLE yellow_tripdata_staging
+
+    # 2.3 CSV 데이터 로드 (데이터 있지만 unique_row_id, filename은 null)
+    - id: yellow_copy_in_to_staging_table
+      type: io.kestra.plugin.jdbc.postgresql.CopyIn
+      # CSV → PostgreSQL staging 테이블
+
+    # 2.4 메타데이터 추가 (고유 ID 및 파일명 생성)
+    - id: yellow_add_unique_id_and_filename
+      # UPDATE yellow_tripdata_staging SET unique_row_id = md5(...)
+
+    # 2.5 데이터 병합 (staging → main 테이블)
+    - id: yellow_merge_data
+      type: io.kestra.plugin.jdbc.postgresql.Queries
+      # MERGE INTO yellow_tripdata AS T USING yellow_tripdata_staging AS S
+```
+
+**Phase 3: 조건분기 - Green Taxi 처리**
+```yaml
+# 조건문: 택시 타입이 green인 경우에만 실행
+- id: if_green_taxi
+  type: io.kestra.plugin.core.flow.If
+  condition: "{{inputs.taxi == 'green'}}"
+  then:
+    # 3.1 메인 테이블 생성
+    - id: green_create_table
+      # CREATE TABLE IF NOT EXISTS green_tripdata (...)
+
+    # 3.2 스테이징 테이블 생성
+    - id: green_create_staging_table
+      # CREATE TABLE IF NOT EXISTS green_tripdata_staging (...)
+
+    - id: green_truncate_staging_table
+      # TRUNCATE TABLE green_tripdata_staging
+
+    # 3.3 CSV 데이터 로드 (데이터 있지만 unique_row_id, filename은 null)
+    - id: green_copy_in_to_staging_table
+      type: io.kestra.plugin.jdbc.postgresql.CopyIn
+      # CSV → PostgreSQL staging 테이블
+
+    # 3.4 메타데이터 추가 (고유 ID 및 파일명 생성)
+    - id: green_add_unique_id_and_filename
+      # UPDATE green_tripdata_staging SET unique_row_id = md5(...)
+
+    # 3.5 데이터 병합 (staging → main 테이블)
+    - id: green_merge_data
+      type: io.kestra.plugin.jdbc.postgresql.Queries
+      # MERGE INTO green_tripdata AS T USING green_tripdata_staging AS S
+```
+
+**Phase 4: 정리**
+```yaml
+# 파일 정리: 실행에 사용된 임시 파일들 삭제
+- id: purge_files
+  type: io.kestra.plugin.core.storage.PurgeCurrentExecutionFiles
 ```
 
 **특징:**
@@ -473,6 +547,7 @@ Raw Data → Load to DB → Transform in DB → Clean Data
 - **조건분기**: Yellow/Green 택시별 다른 스키마 처리
 - **데이터 품질**: MD5 해시로 중복 데이터 방지
 - **확장성**: 입력 파라미터로 다양한 데이터 처리 가능
+- **단계적 구축**: 강의에서 점진적으로 코드 추가하며 실행
 
 ## 8. 💡 요약 정리
 
