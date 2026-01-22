@@ -29,7 +29,7 @@ variables:                                   # 동적 변수들 (템플릿)
   data: "{{outputs.extract.outputFiles[inputs.taxi ~ '_tripdata_' ~ inputs.year ~ '-' ~ inputs.month ~ '.csv']}}"  # 추출된 데이터 경로
 
 tasks:                                      # 워크플로우 실행 태스크들
-  - id: set_label                             # [라벨 설정] 실행에 라벨 추가
+  - id: set_label                             # [라벨 설정] 실행에 라벨 추가 (여러번 실행했을때 로그를 보지않아도 한눈에 모든 정보 확인 가능)
     type: io.kestra.plugin.core.execution.Labels  # 실행 라벨 플러그인
     labels:                                   # 추가할 라벨들
       file: "{{render(vars.file)}}"           # 파일명 라벨
