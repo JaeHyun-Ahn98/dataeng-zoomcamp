@@ -1,0 +1,55 @@
+id: 03_getting_started_data_pipeline   # 워크플로우 고유 ID
+namespace: zoomcamp                       # 워크플로우 그룹
+
+inputs:                                   # 사용자 입력 파라미터
+  - id: columns_to_keep                   # 유지할 컬럼 목록
+    type: ARRAY                           # 배열 타입
+    itemType: STRING                     # 문자열 요소
+    defaults:                             # 기본값
+      - brand                             # 브랜드 컬럼
+      - price                             # 가격 컬럼
+
+tasks:                                    # ETL 파이프라인 태스크들
+  - id: extract                           # [EXTRACT] 데이터 추출
+    type: io.kestra.plugin.core.http.Download  # HTTP 다운로드 플러그인
+    uri: https://dummyjson.com/products   # 더미 상품 데이터 API
+
+  - id: transform                         # [TRANSFORM] 데이터 변환
+    type: io.kestra.plugin.scripts.python.Script  # Python 스크립트 실행
+    containerImage: python:3.11-alpine    # 가벼운 Python 이미지
+    inputFiles:                           # 입력 파일 매핑
+      data.json: "{{outputs.extract.uri}}"  # 이전 태스크의 출력 연결
+    outputFiles:                          # 생성될 출력 파일 패턴
+      - "*.json"                          # 모든 JSON 파일
+    env:                                  # 환경변수 설정
+      COLUMNS_TO_KEEP: "{{inputs.columns_to_keep}}"  # 유지할 컬럼 전달
+    script: |                             # Python 변환 로직
+      import json                         # JSON 처리
+      import os                           # 환경변수 접근
+
+      columns_to_keep_str = os.getenv("COLUMNS_TO_KEEP")  # 환경변수에서 컬럼 목록 가져오기
+      columns_to_keep = json.loads(columns_to_keep_str)   # JSON 문자열을 리스트로 변환
+
+      with open("data.json", "r") as file:  # 원본 데이터 파일 읽기
+          data = json.load(file)
+
+      filtered_data = [                   # 필요한 컬럼만 필터링
+          {column: product.get(column, "N/A") for column in columns_to_keep}
+          for product in data["products"]  # products 배열에서 각 상품 처리
+      ]
+
+      with open("products.json", "w") as file:  # 필터링된 데이터 저장
+          json.dump(filtered_data, file, indent=4)
+
+  - id: query                             # [LOAD/QUERY] 데이터 분석
+    type: io.kestra.plugin.jdbc.duckdb.Queries  # DuckDB SQL 쿼리 실행
+    inputFiles:                           # 분석할 데이터 파일
+      products.json: "{{outputs.transform.outputFiles['products.json']}}"  # 변환된 데이터
+    sql: |                                # SQL 분석 쿼리
+      INSTALL json;                       # JSON 확장 기능 설치
+      LOAD json;                          # JSON 확장 로드
+      SELECT brand, round(avg(price), 2) as avg_price  # 브랜드별 평균 가격 계산
+      FROM read_json_auto('{{workingDir}}/products.json')  # JSON 파일 읽기
+      GROUP BY brand                      # 브랜드별 그룹화
+      ORDER BY avg_price DESC;            # 평균 가격 내림차순 정렬
+    fetchType: STORE                      # 쿼리 결과를 저장

@@ -1,0 +1,31 @@
+id: 02_python                            # 워크플로우 고유 ID
+namespace: zoomcamp                       # 워크플로우 그룹
+
+description: This flow will install the pip package in a Docker container, and use kestra's Python library to generate outputs (number of downloads of the Kestra Docker image) and metrics (duration of the script).
+
+tasks:                                    # 실행 태스크 목록
+  - id: collect_stats                     # 태스크 고유 ID
+    type: io.kestra.plugin.scripts.python.Script  # Python 스크립트 플러그인
+    taskRunner:                           # 실행 환경 설정
+      type: io.kestra.plugin.scripts.runner.docker.Docker  # Docker 컨테이너에서 실행
+    containerImage: python:slim           # 사용할 Python Docker 이미지
+    dependencies:                         # Python 실행에 필요한 외부 라이브러리
+      - requests                          # HTTP 요청용 라이브러리
+      - kestra                            # Kestra Python SDK
+    script: |                             # 실제 실행될 Python 코드
+      from kestra import Kestra            # Kestra Python 라이브러리 임포트
+      import requests                     # HTTP 요청 라이브러리
+
+      def get_docker_image_downloads(image_name: str = "kestra/kestra"):
+          """Docker Hub API에서 특정 이미지의 다운로드 횟수를 조회합니다."""
+          url = f"https://hub.docker.com/v2/repositories/{image_name}/"
+          response = requests.get(url)    # API 호출
+          data = response.json()          # JSON 응답 파싱
+          downloads = data.get('pull_count', 'Not available')  # 다운로드 횟수 추출
+          return downloads
+
+      downloads = get_docker_image_downloads()  # 함수 실행
+      outputs = {                         # 출력 데이터 구성
+          'downloads': downloads          # 다운로드 횟수
+      }
+      Kestra.outputs(outputs)             # 결과를 Kestra로 반환

@@ -1,0 +1,48 @@
+id: 01_hello_world                     # 워크플로우 고유 ID
+namespace: zoomcamp                       # 워크플로우가 속한 그룹/폴더
+
+inputs:                                   # 사용자 입력 파라미터 정의
+  - id: name                              # 입력 파라미터 이름
+    type: STRING                          # 데이터 타입 (문자열)
+    defaults: Will                        # 기본값
+
+concurrency:                              # 동시 실행 제한 설정
+  behavior: FAIL                          # 제한 초과시 실패 처리
+  limit: 2                                # 최대 2개 동시 실행
+
+variables:                                # 워크플로우 내 재사용 변수
+  welcome_message: "Hello, {{ inputs.name }}!"  # 입력값을 활용한 변수
+
+tasks:                                    # 실행할 작업 목록
+  - id: hello_message                     # 첫 번째 태스크
+    type: io.kestra.plugin.core.log.Log   # 로그 출력 플러그인
+    message: "{{ render(vars.welcome_message) }}"  # 변수 렌더링 후 출력
+
+  - id: generate_output                   # 두 번째 태스크
+    type: io.kestra.plugin.core.debug.Return  # 디버그용 출력 생성
+    format: I was generated during this workflow.  # 출력 형식
+
+  - id: sleep                             # 세 번째 태스크 (15초 대기)
+    type: io.kestra.plugin.core.flow.Sleep  # 대기 플러그인
+    duration: PT15S                       # ISO 8601 기간 형식 (15초)
+
+  - id: log_output                        # 네 번째 태스크
+    type: io.kestra.plugin.core.log.Log   # 이전 태스크의 출력값 로깅
+    message: "This is an output: {{ outputs.generate_output.value }}"
+
+  - id: goodbye_message                   # 다섯 번째 태스크
+    type: io.kestra.plugin.core.log.Log   # 종료 메시지
+    message: "Goodbye, {{ inputs.name }}!"
+
+pluginDefaults:                          # 플러그인 기본 설정
+  - type: io.kestra.plugin.core.log.Log   # 로그 플러그인에 대한 기본값
+    values:
+      level: ERROR                       # 모든 로그를 ERROR 레벨로 설정
+
+triggers:                                 # 자동 실행 트리거
+  - id: schedule                          # 트리거 고유 ID
+    type: io.kestra.plugin.core.trigger.Schedule  # 시간 기반 트리거
+    cron: "0 10 * * *"                    # 매일 오전 10시 실행 (크론 표현식)
+    inputs:                               # 트리거 실행시 전달할 입력값
+      name: Sarah                         # name 파라미터에 Sarah 전달
+    disabled: true                        # 자동 실행 비활성화 (수동 테스트용)
