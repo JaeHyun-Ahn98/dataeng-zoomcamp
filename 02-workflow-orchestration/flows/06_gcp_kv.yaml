@@ -1,0 +1,33 @@
+id: 06_gcp_kv
+namespace: zoomcamp
+
+tasks:
+  - id: gcp_project_id
+    type: io.kestra.plugin.core.kv.Set
+    key: GCP_PROJECT_ID
+    kvType: STRING
+    value: kestra-sandbox-485208  # 실제 GCP 프로젝트 ID
+
+  - id: gcp_location
+    type: io.kestra.plugin.core.kv.Set
+    key: GCP_LOCATION
+    kvType: STRING
+    value: asia-northeast1  # 서울 리전 (한국 사용자용)
+
+  - id: gcp_bucket_name
+    type: io.kestra.plugin.core.kv.Set
+    key: GCP_BUCKET_NAME
+    kvType: STRING
+    value: jaehyun-dataeng-kestra-bucket  # 한국 사용자용 버킷 (전 세계적으로 고유해야 함)
+
+  - id: gcp_dataset
+    type: io.kestra.plugin.core.kv.Set
+    key: GCP_DATASET
+    kvType: STRING
+    value: zoomcamp
+
+  - id: set_gcp_creds
+    type: io.kestra.plugin.core.kv.Set
+    key: GCP_CREDS
+    kvType: JSON
+    value: "{{ secret('GCP_CREDS') }}"  # docker-compose 환경변수에서 가져오기
