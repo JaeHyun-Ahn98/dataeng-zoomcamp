@@ -280,7 +280,7 @@ Kestra UI에서 다음 항목들을 통해 워크플로우를 모니터링할 �
 
 > 💡 **팁**: 강의에서는 concurrency를 테스트하기 위해 일부러 sleep 태스크(15초)를 넣어 실행 시간을 끌고, 그 사이 실행 버튼을 여러 번 눌러 실패하는 모습을 보여줍니다.
 
-## 7. 🐍 Kestra Python 오케스트레이션 실습
+## 6. 🐍 Kestra Python 오케스트레이션 실습
 
 ### 7.1 성공한 워크플로우 코드 분석
 
@@ -549,7 +549,157 @@ Raw Data → Load to DB → Transform in DB → Clean Data
 - **확장성**: 입력 파라미터로 다양한 데이터 처리 가능
 - **단계적 구축**: 강의에서 점진적으로 코드 추가하며 실행
 
-## 8. 💡 요약 정리
+## 7. 🚀 Kestra 자동화 파이프라인(05_postgres_taxi_scheduled) 핵심 정리
+
+### 7.1 04_postgres_taxi 코드 대비 주요 변경점
+
+| 기능 | 04번 코드 (수동) | 05번 코드 (자동) |
+|------|------------------|------------------|
+| **날짜 입력** | 사용자가 year, month를 직접 선택 | trigger.date를 통해 시스템이 자동 결정 |
+| **실행 방식** | Execute 버튼 클릭 시 1회 실행 | cron 설정에 따라 정해진 시간에 자동 실행 |
+| **파일 이름** | 입력값 조합: `{{inputs.year}}-{{inputs.month}}` | 날짜 포맷: `{{trigger.date \| date('yyyy-MM')}}` |
+| **동시성 제어** | 없음 (여러 개 동시 실행 가능) | `concurrency: limit: 1` (한 번에 하나만 실행) |
+
+### 7.2 코드별 상세 설명
+
+#### ① 동시성 제한 (concurrency)
+```yaml
+concurrency:
+  limit: 1
+```
+**설명**: 백필을 돌리면 수십 개의 작업이 한꺼번에 생길 수 있습니다. 이때 DB에 무리가 가지 않도록 한 번에 딱 하나의 작업만 순서대로 처리하게 만드는 안전장치입니다.
+
+#### ② 트리거 기반 변수 설정 (variables)
+```yaml
+variables:
+  file: "{{inputs.taxi}}_tripdata_{{trigger.date | date('yyyy-MM')}}.csv"
+```
+**설명**: `trigger.date`는 Kestra가 제공하는 마법 같은 변수입니다.
+- **정기 실행 시**: "오늘 날짜"가 들어갑니다.
+- **백필 실행 시**: "과거의 특정 날짜"가 자동으로 들어갑니다.
+
+따라서 코드 수정 없이도 과거 데이터를 정확히 집어낼 수 있습니다.
+
+#### ③ 트리거 및 스케줄링 (triggers)
+```yaml
+triggers:
+  - id: green_schedule
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 9 1 * *" # 매월 1일 오전 9시
+    inputs:
+      taxi: green
+```
+**설명**:
+- **`cron: "0 9 1 * *"`**: 리눅스 스케줄 방식입니다. (분 시 일 월 요일)
+- **`inputs`**: 스케줄이 실행될 때 어떤 택시 타입을 선택할지 미리 지정해 둡니다.
+
+### 7.3 백필(Backfill) 완벽 이해하기
+
+#### ❓ 백필이란?
+파이프라인을 오늘 만들었더라도, 어제나 작년의 데이터를 가져오기 위해 과거 날짜로 시뮬레이션 실행을 하는 기능입니다.
+
+#### 🛠️ 백필 실행 방법 (UI)
+1. Kestra에서 해당 워크플로우의 **Triggers 탭**으로 이동합니다.
+2. `green_schedule` 혹은 `yellow_schedule` 옆의 **Backfill 버튼**을 누릅니다.
+3. **Start Date**와 **End Date**를 설정합니다 (예: 2019-01-01 ~ 2020-01-01).
+4. **Execute Backfill**을 누르면 Kestra가 해당 범위 내의 모든 "매월 1일"을 찾아내어 작업을 생성합니다.
+
+#### ⚠️ 백필 주의사항 (복습)
+- **시간 범위**: 내 스케줄이 09:00이라면, 종료 날짜는 반드시 해당 월의 9시 이후를 포함해야 합니다. (안전하게 다음 날짜로 잡으세요!)
+- **레이블 활용**: 백필 실행 시 UI에서 `backfill: true`라는 레이블을 추가하면, 나중에 어떤 데이터가 백필로 들어온 것인지 쉽게 구분할 수 있습니다.
+
+### 7.4 최종 워크플로우 흐름도
+
+```
+Trigger: 정해진 시간 혹은 백필 설정에 의해 날짜(trigger.date)가 결정됨
+    ↓
+Extract: 해당 날짜의 CSV 파일을 인터넷에서 다운로드
+    ↓
+Staging: 임시 테이블에 원본 데이터 그대로 복사(CopyIn)
+    ↓
+Upsert (Merge): 중복을 체크하여 최종 테이블에 신규 데이터만 반영
+    ↓
+Purge: 용량 확보를 위해 사용한 임시 파일 삭제
+```
+
+## 8. 🏗️ 생태계별 데이터 레이크 & 웨어하우스 종류
+
+보통 기업이 어떤 클라우드 서비스를 메인으로 쓰느냐에 따라 선택이 갈립니다.
+
+### 8.1 생태계별 서비스 비교
+
+| 분류 | Google Cloud (GCP) | Amazon Web Services (AWS) | Microsoft Azure | 독립형 (Multi-Cloud) |
+|------|-------------------|---------------------------|-----------------|---------------------|
+| **데이터 레이크 (저장소)** | GCS (Google Cloud Storage) | S3 (Simple Storage Service) | ADLS (Azure Data Lake Storage) | - |
+| **데이터 웨어하우스 (분석)** | BigQuery | Redshift | Synapse Analytics | Snowflake |
+
+### 8.2 데이터 레이크 (Data Lake)의 실무 트렌드
+
+실무에서는 **"클라우드 오브젝트 스토리지"**를 데이터 레이크로 씁니다. 무한대에 가까운 확장성과 매우 저렴한 비용 때문입니다.
+
+- **AWS S3**: 전 세계에서 가장 많이 쓰이는 레이크입니다. 거의 모든 데이터 도구와 호환됩니다.
+- **GCS**: 구글 클라우드를 쓴다면 무조건 선택합니다. BigQuery와의 연동 속도가 매우 빠릅니다.
+- **Hadoop (HDFS)**: 클라우드로 넘어가기 전, 자체 서버(On-premise)를 운영하는 기업들이 전통적으로 쓰던 방식입니다. (요즘은 클라우드로 많이 넘어가는 추세입니다.)
+
+### 8.3 데이터 웨어하우스 (Data Warehouse)의 실무 트렌드
+
+최근 실무에서는 성능만큼이나 **"관리가 편한가(Serverless)"**를 중요하게 봅니다.
+
+- **BigQuery (GCP)**: 인덱스 설정도 필요 없고, 그냥 쿼리만 던지면 구글이 알아서 수천 대의 서버를 돌려 결과를 줍니다. 관리가 가장 편합니다.
+- **Snowflake**: 최근 가장 핫한 강자입니다. 특정 클라우드에 종속되지 않고 AWS, GCP 어디서든 쓸 수 있으며 성능과 사용 편의성이 매우 뛰어납니다.
+- **AWS Redshift**: AWS 생태계를 이미 깊게 사용 중인 기업에서 많이 씁니다. 설정에 따라 비용 효율이 좋습니다.
+
+### 8.4 요즘 실무의 대세: 데이터 레이크하우스 (Lakehouse)
+
+요즘은 **"레이크의 저렴한 비용 + 웨어하우스의 강력한 분석 성능"**을 합친 데이터 레이크하우스가 대세입니다.
+
+- **Databricks**: Apache Spark를 만든 팀이 세운 회사로, 레이크 위에서 바로 SQL 분석을 할 수 있게 해줍니다.
+- **Apache Iceberg / Hudi**: 파일은 레이크(S3, GCS)에 저장되어 있지만, 마치 DB처럼 데이터를 수정(Update/Delete)하고 관리할 수 있게 해주는 기술입니다.
+
+### 8.5 데이터 레이크 vs 데이터 웨어하우스: 핵심 차이점
+
+#### 🎯 저장 방식의 차이
+- **데이터 레이크**: **원본 데이터를 통째로 저장** (CSV, JSON, 로그 파일 등)
+  - 예: 뉴욕 택시 CSV 파일을 압축 해제해서 통째로 S3/GCS에 넣어놓음
+  - **장점**: 모든 원본 데이터를 보존, 향후 다양한 분석 가능성
+  - **단점**: 데이터 품질이 일관되지 않을 수 있음
+
+- **데이터 웨어하우스**: **가공된 데이터를 구조화해서 저장**
+  - 예: CSV 데이터를 정제해서 테이블 형태로 변환 저장
+  - **장점**: 데이터 품질 보장, 빠른 쿼리 성능
+  - **단점**: 저장 비용 높음, 유연성 부족
+
+#### 🔗 참조 기반 분석의 장점
+데이터 웨어하우스(BigQuery, Snowflake 등)는 **데이터를 직접 저장하지 않고 레이크의 데이터를 참조**하는 방식을 지원합니다:
+
+**외부 테이블 (External Table)**: 레이크의 CSV 파일을 마치 DB 테이블처럼 쿼리
+```sql
+-- BigQuery에서 GCS의 CSV 파일 직접 쿼리
+SELECT *
+FROM `project.dataset.external_table`
+WHERE pickup_date >= '2024-01-01'
+```
+
+**장점:**
+- **저장 비용 절감**: 데이터를 중복 저장하지 않음
+- **실시간성**: 레이크의 최신 데이터를 바로 분석
+- **유연성**: ETL 없이도 빠른 데이터 탐색 가능
+- **데이터 governance**: 하나의 데이터 소스로 여러 분석 도구에서 활용
+
+#### 🏗️ 하이브리드 아키텍처의 진화
+```
+📊 최신 아키텍처:
+데이터 레이크 (저장소) ← 외부 테이블 → 데이터 웨어하우스 (분석 엔진)
+       ↓
+   원본 데이터 (CSV, 로그 등)
+```
+
+**실무 적용 예시:**
+- **데이터 레이크**: 모든 고객 이벤트 로그, 센서 데이터, 클릭스트림 데이터 저장
+- **데이터 웨어하우스**: 레이크의 데이터를 참조하여 실시간 대시보드, BI 분석 수행
+- **데이터 레이크하우스**: 하나의 플랫폼에서 저장과 분석을 모두 처리
+
+## 9. 💡 요약 정리
 
 | 구분 | 설명 |
 |------|------|
@@ -559,3 +709,632 @@ Raw Data → Load to DB → Transform in DB → Clean Data
 | **핵심 기능** | 스케줄링, 실패 시 재시도, 작업 간 데이터 전달, 모니터링 |
 | **실행 포트** | 웹 UI: 8080, API: 8081 |
 | **접속 정보** | admin@kestra.io / Admin1234 |
+
+### 💡 실무 선택 가이드
+| 상황 | 추천 조합 |
+|------|-----------|
+| **스타트업/신규 프로젝트** | 관리가 편한 GCP (GCS + BigQuery) 혹은 Snowflake |
+| **대규모 기존 인프라** | AWS (S3 + Redshift)가 압도적으로 많음 |
+| **머신러닝/복잡한 가공 위주** | Databricks를 함께 사용하는 경우가 많음 |
+
+## 10. ☁️ GCP 인프라 자동 구축 실습 (06_gcp_kv + 07_gcp_setup)
+
+### 10.1 GCP 워크플로우 개요
+
+강의의 마지막 부분에서는 **Kestra를 활용해 Google Cloud Platform(GCP) 인프라를 코드로 자동 구축**하는 방법을 실습했습니다.
+
+#### 워크플로우 구성
+- **`06_gcp_kv.yaml`**: GCP 설정값들을 Kestra의 Key-Value(KV) 스토어에 저장
+- **`07_gcp_setup.yaml`**: KV 스토어의 값들을 활용해 GCP 리소스 자동 생성
+
+### 10.2 Kestra KV 스토어의 역할
+
+#### ❓ KV 스토어란?
+Kestra 내부의 **키-값 저장소**로, 워크플로우 간에 데이터를 공유하고 재사용할 수 있게 해줍니다.
+
+#### 📊 실제 활용 예시
+```
+KV Store 내용:
+- GCP_PROJECT_ID: "kestra-sandbox-485208"
+- GCP_LOCATION: "asia-northeast1"
+- GCP_BUCKET_NAME: "jaehyun-dataeng-kestra-bucket"
+- GCP_DATASET: "zoomcamp"
+- GCP_CREDS: {서비스 계정 JSON 키}
+```
+
+### 10.3 06_gcp_kv.yaml: 설정값 저장 워크플로우
+
+#### 워크플로우 구조
+```yaml
+id: 06_gcp_kv
+namespace: zoomcamp
+
+tasks:
+  # GCP 프로젝트 ID 저장
+  - id: gcp_project_id
+    type: io.kestra.plugin.core.kv.Set
+    key: GCP_PROJECT_ID
+    value: kestra-sandbox-485208
+
+  # GCP 리전 저장 (한국 사용자용)
+  - id: gcp_location
+    type: io.kestra.plugin.core.kv.Set
+    key: GCP_LOCATION
+    value: asia-northeast1
+
+  # GCS 버킷 이름 저장 (전역적으로 고유해야 함)
+  - id: gcp_bucket_name
+    type: io.kestra.plugin.core.kv.Set
+    key: GCP_BUCKET_NAME
+    value: jaehyun-dataeng-kestra-bucket
+
+  # BigQuery 데이터셋 이름 저장
+  - id: gcp_dataset
+    type: io.kestra.plugin.core.kv.Set
+    key: GCP_DATASET
+    value: zoomcamp
+
+  # GCP 서비스 계정 키 저장 
+  - id: set_gcp_creds
+    type: io.kestra.plugin.core.kv.Set
+    key: GCP_CREDS
+    kvType: JSON
+    value: "{ google cloud key }"
+```
+
+#### 실행 결과
+✅ **Kestra KV Store에 GCP 설정값들이 저장됨**
+- 프로젝트 ID, 리전, 버킷 이름, 데이터셋 이름, 서비스 계정 키가 모두 저장
+- 이후 워크플로우에서 `{{kv('GCP_PROJECT_ID')}}` 등의 형식으로 재사용 가능
+
+### 10.4 07_gcp_setup.yaml: GCP 리소스 생성 워크플로우
+
+#### 워크플로우 구조
+```yaml
+id: 07_gcp_setup
+namespace: zoomcamp
+
+tasks:
+  # GCS 버킷 생성
+  - id: create_gcs_bucket
+    type: io.kestra.plugin.gcp.gcs.CreateBucket
+    ifExists: SKIP  # 이미 존재하면 스킵
+    storageClass: REGIONAL
+    name: "{{kv('GCP_BUCKET_NAME')}}"
+
+  # BigQuery 데이터셋 생성
+  - id: create_bq_dataset
+    type: io.kestra.plugin.gcp.bigquery.CreateDataset
+    name: "{{kv('GCP_DATASET')}}"
+    ifExists: SKIP  # 이미 존재하면 스킵
+
+# 플러그인 기본 설정 (모든 GCP 태스크에 적용)
+pluginDefaults:
+  - type: io.kestra.plugin.gcp
+    values:
+      serviceAccount: "{{kv('GCP_CREDS')}}"  # KV에서 서비스 계정 가져옴
+      projectId: "{{kv('GCP_PROJECT_ID')}}"
+      location: "{{kv('GCP_LOCATION')}}"
+      bucket: "{{kv('GCP_BUCKET_NAME')}}"
+```
+
+#### 실행 결과
+
+### 10.5 Google Cloud Platform 생성 리소스
+
+#### 🗄️ Google Cloud Storage (GCS) 버킷
+- **버킷 이름**: `jaehyun-dataeng-kestra-bucket`
+- **저장 클래스**: REGIONAL (해당 리전 내 고가용성)
+- **위치**: `asia-northeast1` (서울 리전)
+- **용도**: 데이터 파일 저장, 백업, 공유 등
+
+#### 📊 BigQuery 데이터셋
+- **데이터셋 이름**: `zoomcamp`
+- **프로젝트**: `kestra-sandbox-485208`
+- **위치**: `asia-northeast1` (서울 리전)
+- **용도**: 구조화된 데이터 분석, SQL 쿼리 실행
+
+### 10.6 실제 생성 과정 확인 방법
+
+#### GCP Console에서 확인
+1. **Google Cloud Console** 접속 (console.cloud.google.com)
+2. **좌측 메뉴** → **Cloud Storage** → **Buckets**
+   - `jaehyun-dataeng-kestra-bucket` 버킷 확인
+3. **좌측 메뉴** → **BigQuery** → **SQL 작업공간**
+   - `zoomcamp` 데이터셋 확인
+
+#### Kestra에서 생성 로그 확인
+```yaml
+# 성공 로그 예시
+INFO  - Task 'create_gcs_bucket' completed successfully
+INFO  - Task 'create_bq_dataset' completed successfully
+
+# 이미 존재하는 경우 (SKIP 동작)
+INFO  - Bucket 'jaehyun-dataeng-kestra-bucket' already exists, skipping creation
+INFO  - Dataset 'zoomcamp' already exists, skipping creation
+```
+
+### 10.7 보안 및 설정 관리의 장점
+
+#### 🔐 시크릿 관리
+- **환경변수**: 민감한 GCP 서비스 계정 키를 Docker 환경변수로 관리
+- **KV 스토어**: 워크플로우 간 설정값 공유 및 재사용
+- **접두사 규칙**: `SECRET_*` 환경변수는 자동으로 `secret()` 함수에서 접근 가능
+
+#### 🔄 인프라 as Code
+```yaml
+# 코드 한 줄로 GCP 인프라 생성
+- id: create_gcs_bucket
+  type: io.kestra.plugin.gcp.gcs.CreateBucket
+  name: "{{kv('GCP_BUCKET_NAME')}}"
+```
+
+#### 📈 확장성
+- **환경별 설정**: 개발/스테이징/운영 환경별 다른 값 사용 가능
+- **재사용성**: 하나의 설정값으로 여러 워크플로우에서 활용
+- **버전 관리**: Git으로 인프라 코드 관리 가능
+
+### 10.8 실무 적용 사례
+
+#### 데이터 파이프라인 구축 시나리오
+1. **개발 환경**: `dev-bucket`, `dev-dataset` 생성
+2. **스테이징 환경**: `staging-bucket`, `staging-dataset` 생성
+3. **운영 환경**: `prod-bucket`, `prod-dataset` 생성
+
+#### 코드 예시
+```yaml
+# 환경별 설정만 변경하면 동일 코드로 다른 환경 구축 가능
+variables:
+  env: "{{inputs.environment}}"  # dev, staging, prod
+
+tasks:
+  - id: set_bucket_name
+    type: io.kestra.plugin.core.kv.Set
+    key: GCP_BUCKET_NAME
+    value: "{{vars.env}}-dataeng-kestra-bucket"
+
+  - id: create_infra
+    type: io.kestra.plugin.core.flow.WorkingDirectory
+    tasks:
+      - id: create_gcs_bucket
+        type: io.kestra.plugin.gcp.gcs.CreateBucket
+        name: "{{kv('GCP_BUCKET_NAME')}}"
+```
+
+### 10.9 배운 점과 실무 활용
+
+#### 💡 핵심 인사이트
+- **Infrastructure as Code**: 코드로 클라우드 인프라를 관리하는 현대적 접근법
+- **보안과 편의성의 균형**: 민감한 정보는 환경변수로, 설정값은 KV 스토어로 분리 관리
+- **워크플로우 체이닝**: 하나의 워크플로우 결과를 다른 워크플로우에서 활용
+
+#### 🏢 실무 적용
+- **데이터 레이크 구축**: GCS 버킷을 데이터 레이크로 활용
+- **데이터 웨어하우스 구축**: BigQuery 데이터셋을 분석용 웨어하우스로 활용
+- **CI/CD 파이프라인**: 코드 변경 시 자동으로 인프라 재구축
+- **멀티 환경 관리**: 개발/테스트/운영 환경을 코드로 일관성 있게 관리
+
+이 실습을 통해 **"코드로 클라우드 인프라를 자동 구축하고 관리하는 능력"**을 갖추게 되었습니다. 이제 데이터 엔지니어링의 전 과정을 Kestra로 자동화할 수 있는 기반이 마련되었습니다! 🎉
+
+## 11. 🗂️ 완전한 ELT 파이프라인 구축 (08_gcp_taxi)
+
+### 11.1 08_gcp_taxi 워크플로우 개요
+
+강의의 **마지막 실습**에서는 Kestra를 활용해 **완전한 ELT(Extract-Load-Transform) 파이프라인**을 구축했습니다. 외부 데이터를 가져와서 GCP에 저장하고 분석 가능한 형태로 변환하는 전 과정을 자동화했습니다.
+
+#### 워크플로우의 핵심 기능
+- **Extract**: 뉴욕 택시 데이터를 외부 소스에서 다운로드
+- **Load**: 다운로드된 데이터를 GCS 버킷에 저장
+- **Transform**: BigQuery에서 데이터를 변환하고 분석용 테이블 생성
+- **중복 방지**: 해시 기반 unique_row_id로 데이터 품질 보장
+
+### 11.2 데이터 흐름도
+
+```
+외부 데이터 소스 → Kestra 워크플로우 → GCS 버킷 → BigQuery 테이블
+    ↓                    ↓                ↓              ↓
+GitHub Releases → CSV 다운로드 → 파일 업로드 → 외부 테이블 → 임시 테이블 → 메인 테이블
+```
+
+### 11.3 Extract 단계: 데이터 수집
+
+#### 외부 데이터 소스 다운로드
+```yaml
+- id: extract
+  type: io.kestra.plugin.scripts.shell.Commands
+  commands:
+    - wget -qO- https://github.com/DataTalksClub/nyc-tlc-data/releases/download/{{inputs.taxi}}/{{render(vars.file)}}.gz | gunzip > {{render(vars.file)}}
+```
+
+**실행 결과:**
+- GitHub에서 압축된 CSV 파일 다운로드
+- 로컬 파일 시스템에 압축 해제하여 저장
+- 예: `green_tripdata_2019-01.csv` 파일 생성
+
+### 11.4 Load 단계: 데이터 저장
+
+#### GCS 버킷에 파일 업로드
+```yaml
+- id: upload_to_gcs
+  type: io.kestra.plugin.gcp.gcs.Upload
+  from: "{{render(vars.data)}}"
+  to: "{{render(vars.gcs_file)}}"
+```
+
+**실행 결과:**
+- 로컬 CSV 파일을 GCS 버킷으로 업로드
+- 경로: `gs://jaehyun-dataeng-kestra-bucket/green_tripdata_2019-01.csv`
+- **데이터 레이크**로서의 GCS 역할 수행
+
+### 11.5 Transform 단계: 데이터 변환
+
+#### 11.5.1 외부 테이블 생성
+```yaml
+CREATE OR REPLACE EXTERNAL TABLE `project.dataset.table_ext`
+OPTIONS (
+    format = 'CSV',
+    uris = ['gs://bucket/file.csv'],
+    skip_leading_rows = 1
+);
+```
+
+**실행 결과:**
+- GCS의 CSV 파일을 직접 참조하는 가상 테이블 생성
+- BigQuery가 GCS 파일을 마치 데이터베이스 테이블처럼 쿼리 가능
+- **외부 테이블**: `zoomcamp.green_tripdata_2019_01_ext`
+
+#### 11.5.2 임시 테이블 생성 (데이터 변환)
+```yaml
+CREATE OR REPLACE TABLE `project.dataset.table` AS
+SELECT
+  MD5(CONCAT(VendorID, pickup_datetime, ...)) AS unique_row_id,
+  "filename.csv" AS filename,
+  *
+FROM `project.dataset.table_ext`;
+```
+
+**실행 결과:**
+- 외부 테이블의 데이터를 변환하여 저장
+- **unique_row_id**: 주요 필드들의 해시로 중복 방지
+- **filename**: 데이터 출처 추적을 위한 메타데이터 추가
+- **임시 테이블**: `zoomcamp.green_tripdata_2019_01`
+
+#### 11.5.3 메인 테이블로 데이터 병합
+```yaml
+MERGE INTO `project.dataset.main_table` T
+USING `project.dataset.temp_table` S
+ON T.unique_row_id = S.unique_row_id
+WHEN NOT MATCHED THEN INSERT (...);
+```
+
+**실행 결과:**
+- 임시 테이블의 데이터를 메인 테이블로 병합
+- **중복 데이터 방지**: 동일한 unique_row_id는 삽입되지 않음
+- **증분 업데이트**: 신규 데이터만 추가
+- **메인 테이블**: `zoomcamp.green_tripdata` 또는 `zoomcamp.yellow_tripdata`
+
+### 11.6 Google Cloud Platform 최종 결과
+
+#### 11.6.1 Google Cloud Storage (GCS)
+- **버킷**: `jaehyun-dataeng-kestra-bucket`
+- **저장된 파일들**:
+  - `green_tripdata_2019-01.csv`
+  - `yellow_tripdata_2019-01.csv`
+  - 기타 실행한 모든 택시 데이터 파일들
+
+#### 11.6.2 BigQuery 데이터셋
+- **데이터셋**: `zoomcamp`
+- **테이블들**:
+  - `green_tripdata` - 그린 택시 데이터 (lpep_pickup_datetime으로 파티셔닝)
+  - `yellow_tripdata` - 옐로 택시 데이터 (tpep_pickup_datetime으로 파티셔닝)
+  - 임시 외부 테이블들 (워크플로우 실행 시 자동 생성/삭제)
+
+### 11.7 데이터 품질 및 신뢰성 보장
+
+#### Unique Row ID 생성 로직
+```sql
+MD5(CONCAT(
+  COALESCE(CAST(VendorID AS STRING), ""),
+  COALESCE(CAST(pickup_datetime AS STRING), ""),
+  COALESCE(CAST(dropoff_datetime AS STRING), ""),
+  COALESCE(CAST(PULocationID AS STRING), ""),
+  COALESCE(CAST(DOLocationID AS STRING), "")
+))
+```
+
+**장점:**
+- **중복 방지**: 동일한 택시 기록이 중복 삽입되지 않음
+- **데이터 무결성**: NULL 값 처리로 안정성 보장
+- **재현성**: 동일한 입력이면 항상 동일한 ID 생성
+
+#### Filename 메타데이터
+```sql
+"green_tripdata_2019-01.csv" AS filename
+```
+
+**장점:**
+- **데이터 출처 추적**: 어떤 파일에서 왔는지 확인 가능
+- **디버깅 용이**: 문제가 발생한 경우 원본 파일 식별 가능
+- **감사(Audit) 가능**: 데이터 파이프라인의 투명성 확보
+
+### 11.8 조건분기 처리: Yellow vs Green 택시
+
+#### 택시 타입별 다른 스키마 처리
+```yaml
+- id: if_yellow_taxi
+  condition: "{{inputs.taxi == 'yellow'}}"
+  then: [yellow 전용 태스크들]
+
+- id: if_green_taxi
+  condition: "{{inputs.taxi == 'green'}}"
+  then: [green 전용 태스크들]
+```
+
+**차이점:**
+- **Yellow Taxi**: `tpep_pickup_datetime`, 더 많은 필드
+- **Green Taxi**: `lpep_pickup_datetime`, `ehail_fee`, `trip_type` 등 추가 필드
+
+### 11.9 BigQuery 고급 기능 활용
+
+#### 파티셔닝 (Partitioning)
+```sql
+PARTITION BY DATE(tpep_pickup_datetime)  -- Yellow
+PARTITION BY DATE(lpep_pickup_datetime)  -- Green
+```
+
+**장점:**
+- **쿼리 성능 향상**: 날짜 필터링 시 파티션 프루닝
+- **비용 절감**: 스캔하는 데이터 양 감소
+- **관리 편의성**: 시간 기반 데이터 관리
+
+#### 외부 테이블 (External Table)
+```sql
+OPTIONS (
+    format = 'CSV',
+    uris = ['gs://bucket/file.csv'],
+    skip_leading_rows = 1,
+    ignore_unknown_values = TRUE
+)
+```
+
+**장점:**
+- **저장 비용 절감**: 데이터를 중복 저장하지 않음
+- **실시간성**: GCS 파일 변경 즉시 반영
+- **유연성**: 다양한 파일 포맷 지원
+
+### 11.10 실행 결과 확인 방법
+
+#### Kestra UI에서 확인
+1. **Executions 탭**에서 워크플로우 실행 기록 확인
+2. **Logs 탭**에서 각 단계별 실행 로그 확인
+3. **Outputs 탭**에서 생성된 파일 경로 확인
+
+#### GCP Console에서 확인
+1. **Cloud Storage** → 버킷에서 업로드된 CSV 파일 확인
+2. **BigQuery** → 데이터셋에서 생성된 테이블 및 데이터 확인
+3. **SQL 쿼리**로 데이터 샘플링:
+   ```sql
+   SELECT COUNT(*) FROM `zoomcamp.green_tripdata`;
+   SELECT * FROM `zoomcamp.green_tripdata` LIMIT 10;
+   ```
+
+### 11.11 실무적 의의와 활용
+
+#### 데이터 엔지니어링 파이프라인의 완성
+이 워크플로우는 **현대적 데이터 엔지니어링의 핵심 패턴**을 모두 구현했습니다:
+
+- **데이터 레이크**: GCS에 원본 데이터 저장
+- **데이터 웨어하우스**: BigQuery에 구조화된 데이터 저장
+- **ELT 패턴**: Extract → Load → Transform 순서
+- **중복 방지**: 해시 기반 ID로 데이터 품질 보장
+- **메타데이터 관리**: filename 등 추적 정보 추가
+
+#### 확장 가능성
+- **파라미터화**: year, month, taxi 타입으로 다양한 데이터 처리 가능
+- **재사용성**: 동일한 구조로 다른 데이터 소스 적용 가능
+- **모니터링**: Kestra UI에서 파이프라인 상태 실시간 모니터링
+- **에러 처리**: 실패 시 자동 재시도 및 알림 가능
+
+#### 클라우드 네이티브 아키텍처
+- **Serverless**: BigQuery의 자동 확장 활용
+- **객체 스토리지**: GCS의 무제한 확장성 활용
+- **관리형 서비스**: 인프라 관리 부담 최소화
+
+이 실습을 통해 **실제 현업에서 사용 가능한 수준의 데이터 파이프라인**을 구축하는 방법을 완전히 익혔습니다. 이제 Kestra와 GCP를 활용해 다양한 데이터 엔지니어링 문제를 해결할 수 있는 기반이 마련되었습니다! 🚀
+
+## 12. 📅 자동화된 스케줄링 파이프라인 (09_gcp_taxi_scheduled)
+
+### 12.1 09_gcp_taxi_scheduled 워크플로우 개요
+
+강의의 **최종 실습**에서는 **완전히 자동화된 ELT 파이프라인**을 구축했습니다. 수동 실행이 아닌 **스케줄러에 의해 매월 자동 실행**되는 진정한 운영 환경의 데이터 파이프라인입니다.
+
+#### 08번 vs 09번 워크플로우 비교
+
+| 기능 | 08_gcp_taxi (수동) | 09_gcp_taxi_scheduled (자동) |
+|------|-------------------|----------------------------|
+| **실행 방식** | 수동 실행 버튼 클릭 | 매월 1일 자동 실행 |
+| **날짜 지정** | 사용자가 year/month 선택 | trigger.date로 자동 결정 |
+| **입력 파라미터** | taxi, year, month | taxi 타입만 선택 |
+| **트리거** | 없음 | Schedule 트리거 2개 |
+| **변수 사용** | inputs.year, inputs.month | trigger.date |
+| **실행 주기** | 수시 | 매월 정기적 |
+
+### 12.2 Trigger.date의 마법: 동적 날짜 처리
+
+#### ❓ trigger.date란?
+Kestra의 **스케줄링 트리거**가 제공하는 특별한 변수로, 실행 시점의 날짜 정보를 담고 있습니다.
+
+```yaml
+# 스케줄링 실행 시 자동으로 설정되는 값들
+trigger.date = "2024-01-01T09:00:00.000Z"  # Green 택시 실행 시점
+trigger.date = "2024-01-01T10:00:00.000Z"  # Yellow 택시 실행 시점
+```
+
+#### 📅 동적 변수 생성
+```yaml
+variables:
+  # 실행 시점의 날짜를 사용하여 파일명 생성
+  file: "{{inputs.taxi}}_tripdata_{{trigger.date | date('yyyy-MM')}}.csv"
+  # 예: "green_tripdata_2024-01.csv" (1월 실행 시)
+  # 예: "yellow_tripdata_2024-02.csv" (2월 실행 시)
+
+  # BigQuery 테이블명도 동적 생성
+  table: "{{kv('GCP_DATASET')}}.{{inputs.taxi}}_tripdata_{{trigger.date | date('yyyy_MM')}}"
+  # 예: "zoomcamp.green_tripdata_2024_01"
+```
+
+### 12.3 스케줄링 설정: 매월 자동 실행
+
+#### 트리거 구성
+```yaml
+triggers:
+  # Green 택시: 매월 1일 오전 9시
+  - id: green_schedule
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 9 1 * *"    # cron 표현식
+    inputs:
+      taxi: green        # 실행 시 자동으로 입력값 설정
+
+  # Yellow 택시: 매월 1일 오전 10시
+  - id: yellow_schedule
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 10 1 * *"   # 1시간 차이로 순차 실행
+    inputs:
+      taxi: yellow
+```
+
+#### 🕐 Cron 표현식 이해
+```
+* * * * *
+│ │ │ │ │
+│ │ │ │ └─ 요일 (0-6, 0=일요일)
+│ │ │ └─── 월 (1-12)
+│ │ └───── 일 (1-31)
+│ └─────── 시 (0-23)
+└───────── 분 (0-59)
+
+"0 9 1 * *" = 매월 1일 09:00
+"0 10 1 * *" = 매월 1일 10:00
+```
+
+### 12.4 백필(Backfill) 기능: 과거 데이터 일괄 처리
+
+#### ❓ 백필이란?
+**과거 데이터를 소급하여 파이프라인을 실행**하는 기능입니다. 예를 들어, 파이프라인을 2024년 6월에 만들었더라도 2023년 데이터까지 소급해서 처리할 수 있습니다.
+
+#### 🔄 백필 실행 방법
+1. **Kestra UI → 해당 워크플로우 → Triggers 탭**
+2. **Backfill 버튼 클릭**
+3. **날짜 범위 설정**:
+   - Start Date: `2023-01-01`
+   - End Date: `2024-12-01`
+4. **Execute Backfill** 클릭
+
+#### 📊 백필 결과
+- **2023-01-01**: Green 택시 데이터 (09:00)
+- **2023-01-01**: Yellow 택시 데이터 (10:00)
+- **2023-02-01**: Green 택시 데이터 (09:00)
+- **2023-02-01**: Yellow 택시 데이터 (10:00)
+- **...계속**
+
+### 12.5 운영 환경에서의 활용 패턴
+
+#### 데이터 레이크 하우스 아키텍처 완성
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Data Sources  │ -> │     Kestra      │ -> │      GCP        │
+│                 │    │  Orchestration  │    │   (Data Lake)   │
+│ • API 데이터    │    │                 │    │                 │
+│ • 파일 업로드   │    │ • Extract       │    │ • GCS 버킷      │
+│ • 스트리밍      │    │ • Transform     │    │ • BigQuery      │
+│ • 데이터베이스  │    │ • Load          │    │ • Dataflow      │
+└─────────────────┘    │ • Schedule      │    └─────────────────┘
+                       │ • Monitor       │
+                       │ • Alert         │
+                       └─────────────────┘
+```
+
+#### 실무 적용 시나리오
+1. **매일 실행**: `0 6 * * *` (매일 오전 6시)
+2. **매주 실행**: `0 9 * * 1` (매주 월요일 오전 9시)
+3. **매시간 실행**: `0 * * * *` (매시간 정각)
+4. **업무시간만**: `0 9-17 * * 1-5` (월-금, 9시-17시)
+
+### 12.6 모니터링 및 관리
+
+#### 대시보드 모니터링
+- **실행 상태**: 성공/실패/실행중
+- **성능 지표**: 실행 시간, 데이터 처리량
+- **에러 추적**: 실패 원인 및 로그 분석
+- **SLA 모니터링**: 예상 실행 시간 준수 여부
+
+#### 알림 설정
+```yaml
+# 실패 시 이메일 알림 (실무에서 추가 가능)
+- id: alert_on_failure
+  type: io.kestra.plugin.notifications.email.Email
+  to: "data-team@company.com"
+  subject: "Pipeline Failed: {{flow.name}}"
+  from: "kestra@company.com"
+```
+
+### 12.7 확장성과 유지보수성
+
+#### 코드 재사용성
+```yaml
+# 동일한 구조로 다른 데이터 소스 적용 가능
+- id: 10_api_weather_data
+- id: 11_database_user_logs
+- id: 12_streaming_sensor_data
+```
+
+#### 환경별 설정 관리
+```yaml
+# 개발/스테이징/운영 환경별 다른 설정
+variables:
+  env: "{{globals.env}}"  # dev/staging/prod
+  bucket: "{{vars.env}}-data-bucket"
+  dataset: "{{vars.env}}_analytics"
+```
+
+#### 버전 관리
+- **Git**: 모든 파이프라인 코드 버전 관리
+- **태그**: 프로덕션 배포 시 태그 생성
+- **롤백**: 문제가 발생 시 이전 버전으로 즉시 복구
+
+### 12.8 실무 적용 사례
+
+#### E-commerce 플랫폼
+- **일일 판매 데이터**: 매일 오전 2시에 실행
+- **실시간 재고 동기화**: 5분마다 실행
+- **월간 리포트**: 매월 1일 오전 8시 실행
+
+#### 금융 서비스
+- **시장 데이터 수집**: 장 운영 시간 중 매시간 실행
+- **리스크 리포트**: 매일 오전 6시 실행
+- **규제 리포트**: 분기별 자동 생성
+
+#### IoT 데이터 플랫폼
+- **센서 데이터 수집**: 10분마다 실행
+- **이상 감지**: 실시간 스트리밍 + 배치 처리
+- **예측 모델 업데이트**: 매주 월요일 실행
+
+### 12.9 학습 성과 및 실무 준비도
+
+#### 🎯 익힌 핵심 역량
+1. **스케줄링 자동화**: Cron 기반 정기 실행
+2. **동적 변수 처리**: trigger.date 활용
+3. **백필 처리**: 과거 데이터 소급 처리
+4. **운영 모니터링**: 대시보드 및 알림
+5. **확장성 설계**: 재사용 가능한 파이프라인 구조
+
+#### 🏆 실무 준비도 평가
+- **데이터 엔지니어**: ⭐⭐⭐⭐⭐ (완전 준비)
+- **데이터 분석가**: ⭐⭐⭐⭐ (추가 학습 필요)
+- **소프트웨어 엔지니어**: ⭐⭐⭐⭐ (DevOps 추가 학습 필요)
+
+#### 📈 다음 단계 학습 추천
+- **Apache Airflow**: 더 복잡한 워크플로우
+- **dbt**: 데이터 변환 전문화
+- **Great Expectations**: 데이터 품질 검증
+- **Apache Kafka**: 실시간 데이터 스트리밍

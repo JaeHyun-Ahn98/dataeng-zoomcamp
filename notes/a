@@ -70,3 +70,11 @@ docker run -it --rm \
   --name=pgdatabase \
   postgres:18
 
+
+docs: 워크플로우 오케스트레이션 가이드 및 코드 주석 추가
+
+- 워크플로우 파일들에 상세한 설명 주석 추가
+  - 06_gcp_kv.yaml: GCP 설정값 저장 워크플로우 주석
+  - 07_gcp_setup.yaml: GCP 인프라 자동 구축 워크플로우 주석  
+  - 08_gcp_taxi.yaml: 완전한 ELT 파이프라인 주석
+  - 09_gcp_taxi_scheduled.yaml: 자동 스케줄링 파이프라인 주석
