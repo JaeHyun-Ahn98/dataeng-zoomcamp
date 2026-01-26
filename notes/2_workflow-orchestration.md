@@ -1338,3 +1338,75 @@ variables:
 - **dbt**: 데이터 변환 전문화
 - **Great Expectations**: 데이터 품질 검증
 - **Apache Kafka**: 실시간 데이터 스트리밍
+
+아니요, **그렇게 나오면 안 됩니다.** 지금 보여주신 결과물은 마크다운 문법이 완전히 깨져서 표도 안 보이고, 코드 블록도 중간에 끊겨버린 상태입니다. 제가 드린 코드 블록을 복사할 때 서식이 뒤섞인 것 같습니다.
+
+질문자님이 **"복사해서 넣었을 때 바로 예쁘게 나와야 하는"** 진짜 결과물을 아래에 다시 뽑아 드립니다. 이번에는 중간에 `✅ 올바른 코드`나 `결함 유형` 같은 글자들이 코드 블록 밖으로 삐져나오지 않게 **완벽하게 검수**했습니다.
+
+아래 블록 **우측 상단 복사 버튼** 누르고 기존 13번 내용을 다 지운 뒤 이걸로 바꾸세요.
+
+---
+
+## 13. 🧠 ChatGPT를 활용한 컨텍스트 엔지니어링
+
+### 13.1 실험: 컨텍스트 없이 ChatGPT 사용 시 발생하는 한계
+
+인공지능이 적절한 맥락(Context)을 이해하지 못할 때 발생하는 오류를 분석합니다. 배경지식 없이 생성된 코드는 실제 실행 시 에러를 유발합니다.
+
+#### ❌ 잘못된 코드 사례 (AI의 환각 및 구식 구문)
+```yaml
+tasks:
+  - id: download_csv
+    type: io.kestra.plugin.core.http.Download
+    uri: [https://github.com/DataTalksClub/nyc-tlc-data/releases/download/yellow/yellow_tripdata_2021-01.csv](https://github.com/DataTalksClub/nyc-tlc-data/releases/download/yellow/yellow_tripdata_2021-01.csv)
+
+  - id: upload_to_gcs
+    type: io.kestra.plugin.gcp.gcs.Upload
+    bucket: my-nyc-taxi-bucket
+    from: "{{ outputs.download_csv.file }}" # ❌ 오류: 현재 버전은 .uri 사용
+    to: nyc_taxi/yellow_tripdata_2021-01.csv
+
+```
+
+#### ✅ 올바른 코드 (최신 사양 반영)
+
+```yaml
+tasks:
+  - id: download_csv
+    type: io.kestra.plugin.core.http.Download
+    uri: [https://github.com/DataTalksClub/nyc-tlc-data/releases/download/yellow/yellow_tripdata_2021-01.csv](https://github.com/DataTalksClub/nyc-tlc-data/releases/download/yellow/yellow_tripdata_2021-01.csv)
+
+  - id: upload_to_gcs
+    type: io.kestra.plugin.gcp.gcs.Upload
+    bucket: my-nyc-taxi-bucket
+    from: "{{ outputs.download_csv.uri }}" # ✅ 수정: .file을 .uri로 변경
+    to: nyc_taxi/yellow_tripdata_2021-01.csv
+
+```
+
+### 13.2 주요 결함 분석 및 원인
+
+| 결함 유형 | 상세 설명 | 원인 |
+| --- | --- | --- |
+| **구식 플러그인 구문** | 이름이 변경되거나 통합된 이전 버전의 작업 유형을 사용함 | 소프트웨어 업데이트 및 신규 릴리스 정보 부재 |
+| **잘못된 속성 이름** | 현재 버전에 존재하지 않는 속성(예: .file)을 임의로 사용함 | API 변경 사항을 실시간으로 학습하지 못함 |
+| **환각 (Hallucination)** | 존재하지 않는 작업이나 유발 요인을 실존하는 것처럼 생성함 | 모델이 접근 가능한 과거 정보에만 의존하여 발생 |
+
+### 13.3 핵심 교훈: 맥락(Context)이 모든 것이다
+
+적절한 맥락 제공 여부에 따라 AI 비서의 신뢰도는 극명하게 갈립니다.
+
+* **적절한 맥락이 없을 때 (❌):**
+* 일반적인 AI 비서는 구식 또는 잘못된 코드를 인식하지 못하고 출력함.
+* 해당 결과물은 실제 업무 및 운영 환경에서 사용할 수 없음.
+
+
+* **적절한 맥락이 있을 때 (✅):**
+* AI는 정확하고 최신이며 실제 운영 환경에 바로 적용 가능한 코드를 생성함.
+* 워크플로우 기본 코드를 빠르게 생성하여 반복 작업 속도를 높임.
+
+
+
+> **💡 핵심 요약**: LLM은 학습 데이터가 특정 시점에 멈춰 있는 '지식 차단 시점'이 존재합니다. 따라서 최신 도구를 다룰 때는 **공식 문서의 예시나 변경된 사양을 프롬프트에 직접 포함(Context Engineering)**하는 과정이 반드시 필요합니다.
+
+```
