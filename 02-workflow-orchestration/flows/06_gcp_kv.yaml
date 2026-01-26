@@ -30,4 +30,4 @@ tasks:
     type: io.kestra.plugin.core.kv.Set
     key: GCP_CREDS
     kvType: JSON
-    value: "{{ secret('GCP_CREDS') }}"  # docker-compose 환경변수에서 가져오기
+    value: "GCP Service 계정 키"  # GCP Service 계정 키
