@@ -1140,7 +1140,8 @@ OPTIONS (
 - **객체 스토리지**: GCS의 무제한 확장성 활용
 - **관리형 서비스**: 인프라 관리 부담 최소화
 
-이 실습을 통해 **실제 현업에서 사용 가능한 수준의 데이터 파이프라인**을 구축하는 방법을 완전히 익혔습니다. 이제 Kestra와 GCP를 활용해 다양한 데이터 엔지니어링 문제를 해결할 수 있는 기반이 마련되었습니다! 🚀
+
+---
 
 ## 12. 📅 자동화된 스케줄링 파이프라인 (09_gcp_taxi_scheduled)
 
@@ -1151,7 +1152,7 @@ OPTIONS (
 #### 08번 vs 09번 워크플로우 비교
 
 | 기능 | 08_gcp_taxi (수동) | 09_gcp_taxi_scheduled (자동) |
-|------|-------------------|----------------------------|
+| --- | --- | --- |
 | **실행 방식** | 수동 실행 버튼 클릭 | 매월 1일 자동 실행 |
 | **날짜 지정** | 사용자가 year/month 선택 | trigger.date로 자동 결정 |
 | **입력 파라미터** | taxi, year, month | taxi 타입만 선택 |
@@ -1162,15 +1163,18 @@ OPTIONS (
 ### 12.2 Trigger.date의 마법: 동적 날짜 처리
 
 #### ❓ trigger.date란?
+
 Kestra의 **스케줄링 트리거**가 제공하는 특별한 변수로, 실행 시점의 날짜 정보를 담고 있습니다.
 
 ```yaml
 # 스케줄링 실행 시 자동으로 설정되는 값들
 trigger.date = "2024-01-01T09:00:00.000Z"  # Green 택시 실행 시점
 trigger.date = "2024-01-01T10:00:00.000Z"  # Yellow 택시 실행 시점
+
 ```
 
 #### 📅 동적 변수 생성
+
 ```yaml
 variables:
   # 실행 시점의 날짜를 사용하여 파일명 생성
@@ -1181,11 +1185,13 @@ variables:
   # BigQuery 테이블명도 동적 생성
   table: "{{kv('GCP_DATASET')}}.{{inputs.taxi}}_tripdata_{{trigger.date | date('yyyy_MM')}}"
   # 예: "zoomcamp.green_tripdata_2024_01"
+
 ```
 
 ### 12.3 스케줄링 설정: 매월 자동 실행
 
 #### 트리거 구성
+
 ```yaml
 triggers:
   # Green 택시: 매월 1일 오전 9시
@@ -1201,9 +1207,11 @@ triggers:
     cron: "0 10 1 * *"   # 1시간 차이로 순차 실행
     inputs:
       taxi: yellow
+
 ```
 
 #### 🕐 Cron 표현식 이해
+
 ```
 * * * * *
 │ │ │ │ │
@@ -1215,192 +1223,63 @@ triggers:
 
 "0 9 1 * *" = 매월 1일 09:00
 "0 10 1 * *" = 매월 1일 10:00
+
 ```
 
 ### 12.4 백필(Backfill) 기능: 과거 데이터 일괄 처리
 
 #### ❓ 백필이란?
+
 **과거 데이터를 소급하여 파이프라인을 실행**하는 기능입니다. 예를 들어, 파이프라인을 2024년 6월에 만들었더라도 2023년 데이터까지 소급해서 처리할 수 있습니다.
 
 #### 🔄 백필 실행 방법
+
 1. **Kestra UI → 해당 워크플로우 → Triggers 탭**
 2. **Backfill 버튼 클릭**
 3. **날짜 범위 설정**:
-   - Start Date: `2023-01-01`
-   - End Date: `2024-12-01`
+* Start Date: `2023-01-01`
+* End Date: `2024-12-01`
+
+
 4. **Execute Backfill** 클릭
 
 #### 📊 백필 결과
-- **2023-01-01**: Green 택시 데이터 (09:00)
-- **2023-01-01**: Yellow 택시 데이터 (10:00)
-- **2023-02-01**: Green 택시 데이터 (09:00)
-- **2023-02-01**: Yellow 택시 데이터 (10:00)
-- **...계속**
 
-### 12.5 운영 환경에서의 활용 패턴
-
-#### 데이터 레이크 하우스 아키텍처 완성
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Data Sources  │ -> │     Kestra      │ -> │      GCP        │
-│                 │    │  Orchestration  │    │   (Data Lake)   │
-│ • API 데이터    │    │                 │    │                 │
-│ • 파일 업로드   │    │ • Extract       │    │ • GCS 버킷      │
-│ • 스트리밍      │    │ • Transform     │    │ • BigQuery      │
-│ • 데이터베이스  │    │ • Load          │    │ • Dataflow      │
-└─────────────────┘    │ • Schedule      │    └─────────────────┘
-                       │ • Monitor       │
-                       │ • Alert         │
-                       └─────────────────┘
-```
-
-#### 실무 적용 시나리오
-1. **매일 실행**: `0 6 * * *` (매일 오전 6시)
-2. **매주 실행**: `0 9 * * 1` (매주 월요일 오전 9시)
-3. **매시간 실행**: `0 * * * *` (매시간 정각)
-4. **업무시간만**: `0 9-17 * * 1-5` (월-금, 9시-17시)
-
-### 12.6 모니터링 및 관리
-
-#### 대시보드 모니터링
-- **실행 상태**: 성공/실패/실행중
-- **성능 지표**: 실행 시간, 데이터 처리량
-- **에러 추적**: 실패 원인 및 로그 분석
-- **SLA 모니터링**: 예상 실행 시간 준수 여부
-
-#### 알림 설정
-```yaml
-# 실패 시 이메일 알림 (실무에서 추가 가능)
-- id: alert_on_failure
-  type: io.kestra.plugin.notifications.email.Email
-  to: "data-team@company.com"
-  subject: "Pipeline Failed: {{flow.name}}"
-  from: "kestra@company.com"
-```
-
-### 12.7 확장성과 유지보수성
-
-#### 코드 재사용성
-```yaml
-# 동일한 구조로 다른 데이터 소스 적용 가능
-- id: 10_api_weather_data
-- id: 11_database_user_logs
-- id: 12_streaming_sensor_data
-```
-
-#### 환경별 설정 관리
-```yaml
-# 개발/스테이징/운영 환경별 다른 설정
-variables:
-  env: "{{globals.env}}"  # dev/staging/prod
-  bucket: "{{vars.env}}-data-bucket"
-  dataset: "{{vars.env}}_analytics"
-```
-
-#### 버전 관리
-- **Git**: 모든 파이프라인 코드 버전 관리
-- **태그**: 프로덕션 배포 시 태그 생성
-- **롤백**: 문제가 발생 시 이전 버전으로 즉시 복구
-
-### 12.8 실무 적용 사례
-
-#### E-commerce 플랫폼
-- **일일 판매 데이터**: 매일 오전 2시에 실행
-- **실시간 재고 동기화**: 5분마다 실행
-- **월간 리포트**: 매월 1일 오전 8시 실행
-
-#### 금융 서비스
-- **시장 데이터 수집**: 장 운영 시간 중 매시간 실행
-- **리스크 리포트**: 매일 오전 6시 실행
-- **규제 리포트**: 분기별 자동 생성
-
-#### IoT 데이터 플랫폼
-- **센서 데이터 수집**: 10분마다 실행
-- **이상 감지**: 실시간 스트리밍 + 배치 처리
-- **예측 모델 업데이트**: 매주 월요일 실행
-
-### 12.9 학습 성과 및 실무 준비도
-
-#### 🎯 익힌 핵심 역량
-1. **스케줄링 자동화**: Cron 기반 정기 실행
-2. **동적 변수 처리**: trigger.date 활용
-3. **백필 처리**: 과거 데이터 소급 처리
-4. **운영 모니터링**: 대시보드 및 알림
-5. **확장성 설계**: 재사용 가능한 파이프라인 구조
-
-#### 🏆 실무 준비도 평가
-- **데이터 엔지니어**: ⭐⭐⭐⭐⭐ (완전 준비)
-- **데이터 분석가**: ⭐⭐⭐⭐ (추가 학습 필요)
-- **소프트웨어 엔지니어**: ⭐⭐⭐⭐ (DevOps 추가 학습 필요)
-
-#### 📈 다음 단계 학습 추천
-- **Apache Airflow**: 더 복잡한 워크플로우
-- **dbt**: 데이터 변환 전문화
-- **Great Expectations**: 데이터 품질 검증
-- **Apache Kafka**: 실시간 데이터 스트리밍
-
-아니요, **그렇게 나오면 안 됩니다.** 지금 보여주신 결과물은 마크다운 문법이 완전히 깨져서 표도 안 보이고, 코드 블록도 중간에 끊겨버린 상태입니다. 제가 드린 코드 블록을 복사할 때 서식이 뒤섞인 것 같습니다.
-
-질문자님이 **"복사해서 넣었을 때 바로 예쁘게 나와야 하는"** 진짜 결과물을 아래에 다시 뽑아 드립니다. 이번에는 중간에 `✅ 올바른 코드`나 `결함 유형` 같은 글자들이 코드 블록 밖으로 삐져나오지 않게 **완벽하게 검수**했습니다.
-
-아래 블록 **우측 상단 복사 버튼** 누르고 기존 13번 내용을 다 지운 뒤 이걸로 바꾸세요.
+* **2023-01-01**: Green 택시 데이터 (09:00)
+* **2023-01-01**: Yellow 택시 데이터 (10:00)
+* **2023-02-01**: Green 택시 데이터 (09:00)
+* **...계속**
 
 ---
 
 ## 13. 🛠️ Kestra AI Copilot 설정 및 성능 비교
 
-Kestra 2.5.3 버전부터 도입된 AI Copilot은 최신 플러그인 사양과 모범 사례를 컨텍스트로 활용하여 플로우를 생성하고 수정하도록 설계된 전용 도구입니다.
-
 ### 13.1 AI Copilot 설정 가이드
 
-AI Copilot을 활성화하려면 Gemini API 액세스 설정이 필요합니다.
-
-#### 1단계: Gemini API 키 발급
-1. **Google AI Studio** 접속: [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
-2. Google 계정 로그인 후 **"Create API key"** 클릭하여 키 생성 및 복사
-   > ⚠️ **보안 주의**: API 키는 절대로 Git에 커밋하지 마세요. 환경 변수를 사용하는 것이 안전합니다.
-
-#### 2단계: docker-compose.yml 수정 및 재시작
-Kestra 설정 파일의 `environment` 섹션에 아래 설정을 추가합니다.
+1. **Gemini API 키 발급**: [Google AI Studio](https://aistudio.google.com/app/apikey)에서 키를 생성합니다.
+2. **docker-compose.yml 수정**: 환경 변수에 API 키 정보를 추가합니다.
 
 ```yaml
-services:
-  kestra:
-    environment:
-      KESTRA_CONFIGURATION: |
-        kestra:
-          ai:
-            type: gemini
-            gemini:
-              model-name: gemini-2.5-flash
-              api-key: ${GEMINI_API_KEY}
+environment:
+  KESTRA_CONFIGURATION: |
+    kestra:
+      ai:
+        type: gemini
+        gemini:
+          model-name: gemini-1.5-flash
+          api-key: ${GEMINI_API_KEY}
 
 ```
-
-터미널에서 API 키를 환경 변수로 내보낸 후 서비스를 다시 시작합니다.
-
-```bash
-cd 02-workflow-orchestration/docker
-export GEMINI_API_KEY="본인의_API_키"
-docker compose up -d
-
-```
-
----
 
 ### 13.2 실습: ChatGPT vs AI Copilot 비교
 
-**목표**: 동일한 프롬프트에 대해 컨텍스트 유무가 결과물에 미치는 차이를 확인합니다.
-
 * **프롬프트**: "Create a Kestra flow that loads NYC taxi data from a CSV file to BigQuery. The flow should extract data, upload to GCS, and load to BigQuery."
-* **수행 방법**: Kestra UI(8080 포트) 접속 후 새 플로우 편집기 우측 상단의 **✨ 버튼** 클릭
 
 #### ❌ 실험 A: 일반 ChatGPT 결과 (컨텍스트 부재)
 
 * **주요 결함**: 구형 문법 사용 및 잘못된 속성 참조
 
 ```yaml
-# GPT가 생성한 에러 유발 코드 예시
 - id: upload_to_gcs
   type: io.kestra.plugin.gcp.gcs.Upload
   from: "{{ outputs.download_csv.file }}" # ❌ 오류: 현재 버전은 .uri 사용
@@ -1412,47 +1291,23 @@ docker compose up -d
 * **주요 장점**: 실행 가능한 최신 구문 및 실무 옵션 포함
 
 ```yaml
-# Copilot이 생성한 실행 가능한 코드 예시
 - id: upload_to_gcs
   type: io.kestra.plugin.gcp.gcs.Upload
   from: "{{ outputs.download_taxi_data.uri }}" # ✅ 정확: 최신 속성 사용
 
-- id: load_to_bigquery
-  type: io.kestra.plugin.gcp.bigquery.LoadFromGcs
-  writeDisposition: WRITE_TRUNCATE # ✅ 모범 사례 반영
-  autodetect: true
-
 ```
-
----
 
 ### 13.3 분석: 왜 차이가 발생하는가?
 
 | 결함 유형 | 상세 설명 | 원인 |
 | --- | --- | --- |
-| **구식 구문** | 이름이 변경되거나 통합된 이전 버전의 작업 유형 사용 | 소프트웨어 업데이트 및 신규 릴리스 정보 부재 |
-| **잘못된 속성 이름** | 존재하지 않는 속성(예: .file)을 임의로 사용 | API 변경 사항을 실시간으로 학습하지 못함 |
-| **환각 (Hallucination)** | 존재하지 않는 작업을 실존하는 것처럼 생성 | 모델이 접근 가능한 과거 정보에만 의존 |
+| **구식 구문** | 이름이 변경되거나 통합된 이전 버전 사용 | 신규 릴리스 정보 부재 |
+| **잘못된 속성 이름** | 존재하지 않는 속성(.file) 임의 사용 | API 변경 사항 학습 미흡 |
+| **환각 (Hallucination)** | 존재하지 않는 작업을 생성 | 과거 정보에만 의존 |
 
 ### 13.4 핵심 교훈: 맥락(Context)이 모든 것이다
 
-적절한 맥락 제공 여부에 따라 AI 비서의 신뢰도는 극명하게 갈립니다.
-
-* **적절한 맥락이 없을 때 (❌):**
-* 일반적인 AI 비서는 구식 또는 잘못된 코드를 출력하며, 이는 실제 운영 환경에서 사용할 수 없음.
-
-
-* **적절한 맥락이 있을 때 (✅):**
-* AI는 정확하고 최신이며 실제 운영 환경에 바로 적용 가능한 코드를 생성함.
-* 워크플로우 기본 코드를 빠르게 생성하여 반복 작업 속도를 획기적으로 높임.
-
-
-
-> **💡 최종 요약**: LLM은 학습 데이터가 멈춰 있는 '지식 차단 시점'이 존재합니다. 따라서 Kestra와 같은 최신 도구를 다룰 때는 **공식 문서의 예시나 변경 사양을 직접 포함(Context Engineering)**하거나, **실시간 맥락을 인지하는 전용 Copilot을 활용**하는 것이 필수적입니다.
-
-```
-
----
+> **💡 최종 요약**: LLM은 지식 차단 시점이 존재하므로, 최신 도구를 다룰 때는 **공식 문서의 사양을 직접 포함(Context Engineering)**하거나 **전용 Copilot을 활용**하는 것이 필수적입니다.
 
 ### 13.5 실습 보충: Kestra KV Store를 이용한 API 키 관리
 
@@ -1461,123 +1316,76 @@ docker compose up -d
 #### 🔐 KV Store 설정 방법
 
 1. Kestra UI 왼쪽 메뉴의 **KV Store** 선택
-2. **Create** 버튼 클릭
-3. **Key**: `GEMINI_API_KEY` 입력
-4. **Value**: 발급받은 실제 API 키 입력 후 저장
+2. **Create** 버튼 클릭 (Key: `GEMINI_API_KEY`, Value: 실제 키 입력)
+
 > **Tip**: 이렇게 설정하면 YAML 코드에 노출하지 않고도 안전하게 AI 기능을 사용할 수 있습니다.
-
-
 
 ---
 
 ## 14. 📚 보너스: 검색 증강 생성 (RAG) 이해 및 실습
 
-단순히 AI의 기억에 의존하는 대신, 외부 문서를 참고하여 답변하게 함으로써 환각(Hallucination) 현상을 해결하는 기술을 실습합니다.
-
 ### 14.1 RAG(Retrieval Augmented Generation)란?
 
 * **개념**: AI가 자신의 학습 데이터 외에 **외부의 신뢰할 수 있는 지식 베이스를 참고**하여 답변을 생성하는 기술입니다.
 * **비유**: 암기한 지식으로만 답하던 학생이 **'전공 서적을 보면서 답하는 오픈북 테스트'**를 치르는 것과 같습니다.
-* **장점**: 최신 정보를 반영할 수 있고, AI가 그럴듯하게 거짓말을 하는 현상을 방지합니다.
-
----
 
 ### 14.2 실습 비교: RAG 미적용 vs RAG 적용
 
 #### ❌ 실험 C: RAG 미적용 결과 (10_chat_without_rag.yaml)
 
-* **프롬프트**: "Kestra 1.1에서 출시된 5가지 주요 기능을 알려줘."
-* **로그 분석 (환각 사례)**:
-* "Kestra 1.1은 **2021년 말**에 출시됨" (실제로는 2025년 출시)
-* "네임스페이스, 변수 기능이 새로 생김" (초창기부터 있던 기능임)
-
-
-* **결론**: 최신 정보가 없는 AI는 과거의 파편화된 지식을 짜깁기하여 **그럴듯한 거짓말**을 생성함.
+* **로그 분석 (환각 사례)**: "Kestra 1.1은 2021년 말에 출시됨" (실제 2025년)
+* **결론**: 최신 정보가 없는 AI는 과거 지식을 짜깁기하여 그럴듯한 거짓말을 생성함.
 
 #### ✅ 실험 D: RAG 적용 결과 (11_chat_with_rag.yaml)
 
-* **수행 방식**: Kestra 1.1 릴리스 노트(외부 문서)를 임베딩하여 지식 저장소에 넣은 뒤 질문함.
-* **로그 분석 (정확한 답변)**:
-* **New Filters**: UI 필터 리디자인 언급.
-* **No-Code Dashboard Editor**: 시각적 대시보드 편집 기능 정확히 파악.
-* **Human Task**: 승인 프로세스 등의 최신 기능을 정확히 나열.
-
-
-* **결론**: 실제 문서를 근거(Grounded)로 답변하기 때문에 **구체적이고 신뢰할 수 있는 정보**를 제공함.
-
----
+* **로그 분석 (정확한 답변)**: New Filters, No-Code Dashboard Editor 등 최신 기능을 정확히 나열.
+* **결론**: 실제 문서를 근거(Grounded)로 답변하기 때문에 구체적이고 신뢰할 수 있는 정보를 제공함.
 
 ### 14.3 Kestra에서의 RAG 작동 과정 (Workflow)
 
-1. **문서 수집 (Ingest Document)**: 외부 URL(GitHub 등)에서 최신 릴리스 노트를 읽어옵니다.
-2. **임베딩 생성 (Embedding)**: `gemini-embedding-001` 모델을 사용하여 텍스트를 AI가 검색하기 쉬운 벡터 데이터로 변환합니다.
-3. **지식 저장 (Store)**: 변환된 데이터를 Kestra의 내장 저장소(KV Store)에 보관합니다.
-4. **컨텍스트 쿼리 (Retrieve & Generate)**: 질문이 들어오면 저장된 지식 중 관련 내용을 찾아 AI 프롬프트에 '참고 자료'로 넣어주고 답변을 생성합니다.
+1. **문서 수집**: 외부 URL에서 최신 릴리스 노트를 읽어옵니다.
+2. **임베딩 생성**: `gemini-embedding-001` 모델을 사용하여 텍스트를 벡터 데이터로 변환합니다.
+3. **지식 저장**: 변환된 데이터를 Kestra 내장 저장소(KV Store)에 보관합니다.
+4. **컨텍스트 쿼리**: 질문 시 저장된 지식을 찾아 AI 프롬프트에 '참고 자료'로 넣어줍니다.
 
 ---
 
 ## 15. 🎯 최종 결론
 
-데이터 오케스트레이션과 AI의 결합에서 가장 중요한 것은 **'신뢰할 수 있는 데이터의 흐름'**입니다.
-
 * **LLM**은 강력한 엔진이지만, **Context(맥락)**라는 연료가 없으면 잘못된 길로 갈 수 있습니다.
-* **Kestra AI Copilot**과 **RAG 기술**을 활용하면, 최신 문법 에러를 방지하고 최신 기술 문서를 실시간으로 반영하는 **지능형 워크플로우**를 구축할 수 있습니다.
-* **핵심 학습 내용**: "AI에게 모르면 지어내지 말고, 이 문서(Context)를 찾아서 대답해"라고 지시하는 능력이 데이터 엔지니어에게 필수적입니다.
-
----
-
-드디어 성공하셨군요! 고생하셨습니다. 그동안의 끈질긴 시도 끝에 완성된 **최종 성공 코드와 실제 서버 명령어를 반영**하여, 16번부터 바로 이어 붙일 수 있도록 완벽하게 정리했습니다.
-
-유튜브 강의의 흐름과 공식 문서의 절차, 그리고 우리가 직접 해결한 인증 방식을 모두 담았습니다.
+* **Kestra AI Copilot**과 **RAG 기술**을 활용하면 최신 기술 문서를 실시간으로 반영하는 **지능형 워크플로우**를 구축할 수 있습니다.
 
 ---
 
 ## 16. ☁️ 클라우드 배포: GCP VM에 Kestra 본부 구축하기
 
-실습 환경을 넘어, 24시간 중단 없이 돌아가는 인프라를 구축하기 위해 Google Cloud Platform(GCP)에 Kestra를 배포하는 실제 과정입니다.
-
 ### 16.1 GCP 인프라 및 네트워크 준비
 
-공장 부지를 닦고, 외부에서 관리실(UI)에 접속할 수 있도록 통로를 만드는 과정입니다.
-
-1. **GCP 프로젝트 설정**: [Google Cloud Console](https://console.cloud.google.com/)에서 프로젝트 선택 후 **Compute Engine API**를 활성화합니다.
-2. **VM 인스턴스 생성**:
-* **사양**: `e2-standard-2` (2 vCPU, 8GB RAM) 권장.
-* **OS**: `Ubuntu 22.04 LTS`.
-
-
-3. **방화벽 규칙 개방**: `VPC 네트워크 > 방화벽`에서 **TCP 8080(UI)** 및 **8081(관리용)** 포트를 개방합니다.
+1. **GCP 프로젝트 설정**: Compute Engine API 활성화.
+2. **VM 인스턴스 생성**: `e2-standard-2`, `Ubuntu 22.04 LTS`.
+3. **방화벽 규칙 개방**: TCP **8080(UI)** 및 **8081(관리용)** 포트 개방.
 
 ### 16.2 서비스 계정 및 GCS 인증 준비
 
-Kestra가 구글 창고(GCS)를 내 집처럼 드나들 수 있게 **'출입 카드'**를 만드는 핵심 단계입니다.
+1. **GCS 버킷 생성**: (예: `kestra-gcs-example0127`)
+2. **서비스 계정(SA) 발급**: **Storage Admin** 역할 부여 후 JSON 키 다운로드.
+3. **서버에 인증 파일 배치**:
 
-1. **GCS 버킷 생성**: 데이터를 보관할 바구니를 만듭니다. (예: `kestra-gcs-example0127`)
-2. **서비스 계정(SA) 발급**:
-* `IAM 및 관리자 > 서비스 계정`에서 계정 생성 후 **Storage Admin** 역할을 부여합니다.
-* `키(Keys) > 새 키 만들기 > JSON`을 선택해 파일을 다운로드합니다.
-
-
-3. **서버에 인증 파일 배치**: SSH 터미널을 통해 다운로드한 JSON 파일을 서버의 지정된 경로에 올립니다.
 ```bash
 # 인증 파일을 보관할 디렉토리 생성
 mkdir -p /home/jaehyen07/kestra/secrets
-# (파일 업로드 기능을 통해 gcp-sa.json을 위 경로에 저장)
+# (gcp-sa.json을 위 경로에 저장)
 
 ```
 
-
-
 ### 16.3 서버 환경 구축 (Docker 설치)
 
-빌린 컴퓨터(VM)에 Kestra를 실행할 일꾼(Docker)들을 설치합니다.
-
 ```bash
-# 1. 시스템 업데이트 및 Docker 설치 스크립트 실행
+# 1. 시스템 업데이트 및 Docker 설치
 curl -fsSL https://get.docker.com -o get-docker.sh
 sudo sh get-docker.sh
 
-# 2. Kestra 실행을 위한 작업 디렉토리 생성
+# 2. Kestra 작업 디렉토리 생성
 mkdir -p ~/kestra && cd ~/kestra
 
 ```
@@ -1588,8 +1396,6 @@ mkdir -p ~/kestra && cd ~/kestra
 
 ### 17.1 최적화된 `docker-compose.yml` 작성
 
-GCS 저장소 연동과 데이터베이스(PostgreSQL) 연결, 그리고 보안을 위한 Basic Auth가 포함된 **최종 성공 버전**의 설계도입니다.
-
 ```yaml
 volumes:
   postgres-data:
@@ -1598,7 +1404,6 @@ volumes:
 services:
   kestra:
     image: kestra/kestra:latest
-    pull_policy: always
     container_name: kestra-server
     user: "root"
     command: server standalone
@@ -1617,7 +1422,6 @@ services:
         datasources:
           postgres:
             url: jdbc:postgresql://10.106.112.3:5432/postgres
-            driverClassName: org.postgresql.Driver
             username: kestra
             password: Kestra1234!
         kestra:
@@ -1626,31 +1430,18 @@ services:
               enabled: true
               username: admin@kestra.io
               password: Admin1234!
-          repository:
-            type: postgres
           storage:
             type: gcs
             gcs:
               bucket: kestra-gcs-example0127
               projectId: kestra-sandbox-485208
-          queue:
-            type: postgres
-          tasks:
-            tmp-dir:
-              path: /tmp/kestra-wd/tmp
-          url: http://localhost:8080/
 
 ```
 
 ### 17.2 서비스 실행 및 로그 확인
 
-설계도를 바탕으로 공장을 가동하고 정상 작동 여부를 모니터링합니다.
-
 ```bash
-# 1. 컨테이너 실행 (백그라운드 모드)
 sudo docker compose up -d
-
-# 2. 실시간 실행 로그 확인 (에러 유무 체크)
 sudo docker compose logs -f kestra-server
 
 ```
@@ -1659,20 +1450,14 @@ sudo docker compose logs -f kestra-server
 
 ## 18. ⚠️ 트러블슈팅: GCS 연동 시 주의사항
 
-이번 배포 과정에서 얻은 가장 귀중한 교훈들입니다.
-
-1. **인증 파일 마운트 (Volume Mount)**: 호스트 서버에 있는 JSON 파일 경로와 `docker-compose` 내부의 `/secrets/` 경로를 정확히 일치시켜야 Kestra가 인증서를 읽을 수 있습니다.
-2. **권한 문제 (Root User)**: Docker 소켓이나 임시 디렉토리에 접근할 때 권한 에러가 발생할 수 있으므로, `user: "root"` 설정을 통해 안정적인 권한을 확보했습니다.
-3. **JSON 형식 보존**: JSON 내용을 텍스트로 복사하면 형식이 깨져 `Malformed JSON` 에러가 발생합니다. 반드시 **파일 단위로 업로드**하고 볼륨 마운트 방식으로 참조하는 것이 가장 확실한 해결책입니다.
+1. **인증 파일 마운트**: 호스트 서버의 JSON 파일 경로와 컨테이너 내부 경로를 정확히 일치시켜야 합니다.
+2. **권한 문제**: `user: "root"` 설정을 통해 Docker 소켓 접근 권한을 확보했습니다.
+3. **JSON 형식 보존**: 텍스트 복사가 아닌 **파일 단위 업로드**를 권장합니다.
 
 ---
 
 ## 19. 🏁 요약: 지능형 클라우드 데이터 본부 완성
 
-이로써 우리는 **GCP 인프라**, **GCS 클라우드 저장소**, **PostgreSQL 데이터베이스**, 그리고 **Kestra 엔진**이 완벽하게 결합된 자동화 본부를 구축했습니다.
-
-* **안전한 저장**: GCS 연동으로 데이터 유실 걱정 없는 무제한 창고 확보.
-* **강력한 성능**: 외부 DB 연결을 통한 대규모 워크플로우 처리 가능.
-* **지능형 자동화**: 이 인프라 위에 앞서 배운 RAG 기술을 올려, 최신 정보를 스스로 학습하고 동작하는 AI 데이터 파이프라인을 운영할 수 있습니다.
+이로써 **GCP 인프라**, **GCS 저장소**, **PostgreSQL**, 그리고 **RAG 기술**이 결합된 자동화 본부를 구축했습니다. 이제 안정적인 클라우드 환경에서 지능형 데이터 파이프라인을 운영할 수 있습니다.
 
 ---
