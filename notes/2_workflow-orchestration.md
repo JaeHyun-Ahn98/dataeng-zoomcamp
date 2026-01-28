@@ -1461,3 +1461,113 @@ sudo docker compose logs -f kestra-server
 이로써 **GCP 인프라**, **GCS 저장소**, **PostgreSQL**, 그리고 **RAG 기술**이 결합된 자동화 본부를 구축했습니다. 이제 안정적인 클라우드 환경에서 지능형 데이터 파이프라인을 운영할 수 있습니다.
 
 ---
+
+네, 요청하신 대로 09번 서브플로우의 구체적인 수정 코드(1, 2번 내역)를 포함하여, 이번 숙제 과정의 전체 흐름을 마크다운 형식으로 최종 정리해 드립니다.
+
+---
+
+# 📝 Kestra 과제: 데이터 파이프라인 자동화 및 트러블슈팅 노트
+
+이 문서는 **2021년 상반기 NYC 택시 데이터 적재**를 자동화하고, 실행 과정에서 발생한 에러를 해결한 과정을 기록합니다.
+
+---
+
+## 1. 메인 워크플로우 설계 (Orchestrator)
+
+**목표**: 택시 종류(2종)와 기간(7개월)을 조합하여 총 14번의 작업을 한 번에 실행.
+
+### **[작성 코드: `taxi_challenge_loop.yaml`]**
+
+```yaml
+id: taxi_challenge_loop
+namespace: zoomcamp
+tasks:
+  - id: taxi_loop
+    type: io.kestra.plugin.core.flow.ForEach
+    values: ["yellow", "green"]
+    tasks:
+      - id: month_loop
+        type: io.kestra.plugin.core.flow.ForEach
+        values: ["2021-01-01", "2021-02-01", "2021-03-01", "2021-04-01", "2021-05-01", "2021-06-01", "2021-07-01"]
+        tasks:
+          - id: call_subflow
+            type: io.kestra.plugin.core.flow.Subflow
+            flowId: 09_gcp_taxi_scheduled
+            inputs:
+              taxi: "{{ parent.taskrun.value }}" # 상위 루프의 택시 종류 전달
+              date: "{{ taskrun.value }}"        # 현재 루프의 날짜 전달
+
+```
+
+---
+
+## 2. 서브플로우 수정 내역 (Worker: 09번 파일)
+
+루프에서 호출될 때 발생한 에러를 해결하기 위해 `09_gcp_taxi_scheduled` 파일의 `inputs`와 `variables`를 수정했습니다.
+
+### **[수정 내역 1: 입력값(Inputs) 확장]**
+
+Subflow가 날짜를 넘겨줄 수 있도록 `date` 입력을 추가했습니다.
+
+```yaml
+inputs:
+  - id: taxi
+    type: SELECT
+    values: [yellow, green]
+    defaults: green
+  - id: date    # 챌린지 루프에서 'date' 인풋을 받기 위해 필수 추가
+    type: DATE
+    defaults: "{{ now() | date('yyyy-MM-dd') }}"
+
+```
+
+### **[수정 내역 2: 변수(Variables) 로직 개선]**
+
+스케줄러와 수동 호출 모두 대응하도록 `??` 연산자를 쓰고, 파싱 에러 방지를 위해 `render`를 적용했습니다.
+
+```yaml
+variables:
+  # trigger.date(스케줄)가 없으면 inputs.date(수동/루프)를 사용
+  target_date: "{{ render(trigger.date ?? inputs.date) }}"
+  
+  # 파일명 및 GCS 경로 생성 시 render를 사용하여 템플릿 중복 해석 방지
+  file: "{{inputs.taxi}}_tripdata_{{ render(vars.target_date) | date('yyyy-MM') }}.csv"
+  gcs_file: "gs://{{kv('GCP_BUCKET_NAME')}}/{{render(vars.file)}}"
+  table: "{{kv('GCP_DATASET')}}.{{inputs.taxi}}_tripdata_{{ render(vars.target_date) | date('yyyy_MM') }}"
+
+```
+
+---
+
+## 3. 트러블슈팅 (Troubleshooting)
+
+실행 중 마주친 에러들과 그 해결책입니다.
+
+| 발생 에러 | 원인 분석 | 해결 방법 |
+| --- | --- | --- |
+| **PebbleException** (date 찾지 못함) | Subflow 실행 시 `trigger` 객체가 없어 `trigger.date`를 참조할 수 없음. | `trigger.date ?? inputs.date` 문법으로 대체값 설정. |
+| **Parsing Error** (index 0 실패) | 변수가 값으로 치환되지 않고 `{{...}}` 텍스트 그대로 전달되어 날짜 형식이 깨짐. | 모든 변수 참조 지점에 **`render()`** 함수를 감싸서 강제 치환. |
+
+---
+
+## 4. 최종 파이프라인 구조 요약
+
+1. **Extract**: GitHub에서 월별 택시 CSV 데이터 다운로드 (`wget`).
+2. **Load**: 다운로드된 파일을 Google Cloud Storage(GCS)로 전송.
+3. **Transform & Merge**:
+* BigQuery 외부 테이블 생성.
+* `MD5` 해시로 고유 ID 생성 후 임시 테이블 구축.
+* `MERGE` 구문을 통해 최종 테이블에 중복 없이 삽입.
+
+
+4. **Cleanup**: 실행이 끝난 로컬 파일 삭제 (`Purge`).
+
+---
+
+## 5. 학습 포인트
+
+* **오케스트레이션**: 중첩 루프를 통해 대량의 백필(Backfill) 작업을 자동화하는 법.
+* **유연한 설계**: `??`(Null Coalescing) 연산자로 스케줄/수동 실행 통합 관리.
+* **디버깅**: 에러 로그를 분석하여 변수 렌더링 시점의 문제를 파악하고 해결.
+
+---
