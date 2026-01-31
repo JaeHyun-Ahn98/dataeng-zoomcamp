@@ -267,6 +267,142 @@ WHERE DATE(tpep_pickup_datetime) BETWEEN '2019-06-01' AND '2020-12-31'
 
 ---
 
+# 🚖 BigQuery ML(BQML) 통합 가이드
+
+## 1. BigQuery ML(BQML)의 정의와 철학
+
+**BigQuery ML**은 데이터 웨어하우스인 BigQuery 내에서 **SQL만 사용하여** 머신러닝 모델을 만들고 실행할 수 있게 해주는 도구입니다.
+
+### **전통적인 ML vs BQML 구조 비교**
+
+* **전통적인 방식**: 데이터를 추출(Export) → 파이썬 환경으로 이동 → 모델 학습 → 결과 전송. 데이터가 클수록 이동 비용과 시간이 기하급수적으로 늘어납니다.
+* **BQML 방식**: **"데이터가 있는 곳으로 알고리즘이 찾아가는 구조"**입니다. 복잡한 파이프라인 없이 SQL 쿼리만으로 모델링이 끝납니다.
+
+### **핵심 장점**
+
+1. **데이터 이동 및 복제 최소화**: 테라바이트급 데이터를 외부로 옮기지 않아 보안이 뛰어나고 빠릅니다.
+2. **분석의 대중화**: 파이썬 코딩을 몰라도 SQL만 알면 누구나 예측 모델을 만들 수 있습니다.
+3. **관리 편의성**: 모델 자체가 BigQuery의 객체(Object)로 저장되어 관리와 배포가 쉽습니다.
+
+---
+
+## 2. 모델 생성 및 데이터 전처리 (Engineering)
+
+머신러닝의 80%는 데이터 전처리입니다. BQML은 이 과정을 SQL 내부에서 자동화하거나 제어할 수 있게 돕습니다.
+
+### **① 데이터 전처리 (Preprocessing)**
+
+* **자동 전처리**: 모델 학습 시 BigQuery가 결측치를 채우거나, 문자열을 범주형 데이터(Category)로 자동 변환합니다.
+* **수동 전처리 (TRANSFORM 절)**: `CREATE MODEL` 문 안에 `TRANSFORM` 절을 사용하면 학습 데이터에 적용한 표준화(`STANDARD_SCALER`)나 인코딩 로직이 모델에 내장됩니다.
+* *효과*: 나중에 실제 예측을 할 때, 원본 데이터를 가공 없이 그대로 넣어도 모델이 알아서 학습 때의 규칙대로 변환하여 결과를 내놓습니다.
+
+### **② 지원하는 주요 모델**
+
+* **선형 회귀 (Linear Regression)**: 팁 금액, 매출액 등 '숫자'를 예측할 때.
+* **로지스틱 회귀 (Logistic Regression)**: 고객이 구매할지 안 할지(Yes/No) '이진 분류'할 때.
+* **K-평균 (K-Means)**: 비슷한 성향의 고객끼리 그룹을 묶을 때 (군집화).
+* **시계열 (ARIMA+)**: 날짜별 수요를 예측할 때.
+
+---
+
+## 3. 실무 SQL 쿼리 가이드 (뉴욕 택시 실습)
+
+강의 영상([DE Zoomcamp 3.3.1](https://www.google.com/search?q=https://youtu.be/B-WtpB0PuG4))에서 다룬 실제 워크플로우를 주석과 함께 상세히 분석합니다.
+
+### **Step 1: 학습을 위한 전용 테이블 생성**
+
+모델이 헷갈리지 않도록 ID 값을 문자열로 바꾸고, 이상치를 제거하는 '데이터 엔지니어링' 작업입니다.
+
+```sql
+CREATE OR REPLACE TABLE `nytaxi.yellow_tripdata_ml` (
+    `passenger_count` INTEGER,
+    `trip_distance` FLOAT64,
+    `PULocationID` STRING,
+    `DOLocationID` STRING,
+    `payment_type` STRING,
+    `fare_amount` FLOAT64,
+    `tolls_amount` FLOAT64,
+    `tip_amount` FLOAT64
+) AS (
+    -- ID와 결제방식은 숫자가 아닌 '범주'이므로 STRING으로 캐스팅
+    SELECT passenger_count, trip_distance, CAST(PULocationID AS STRING), CAST(DOLocationID AS STRING),
+    CAST(payment_type AS STRING), fare_amount, tolls_amount, tip_amount
+    FROM `nytaxi.yellow_tripdata_partitioned` 
+    WHERE fare_amount != 0 -- 요금이 0원인 데이터는 노이즈이므로 제거
+);
+
+```
+
+### **Step 2: 모델 생성 및 학습**
+
+`CREATE MODEL`을 통해 엔진에 학습을 명령합니다.
+
+```sql
+CREATE OR REPLACE MODEL `nytaxi.tip_model`
+OPTIONS (
+    model_type='linear_reg',        -- 모델 종류: 선형 회귀
+    input_label_cols=['tip_amount'],-- 무엇을 맞출 것인가? (라벨)
+    DATA_SPLIT_METHOD='AUTO_SPLIT'  -- 80%는 공부(학습), 20%는 시험(평가)용으로 자동 분리
+) AS
+SELECT * FROM `nytaxi.yellow_tripdata_ml`
+WHERE tip_amount IS NOT NULL;       -- 정답이 있는 데이터만 학습 가능
+
+```
+
+### **Step 3: 모델 평가 및 예측**
+
+학습된 모델이 얼마나 정확한지 검증하고 결과를 뽑습니다.
+
+```sql
+-- [평가] MSE, R2 score 등을 확인하여 모델의 똑똑함을 점수로 확인
+SELECT * FROM ML.EVALUATE(MODEL `nytaxi.tip_model`, (
+    SELECT * FROM `nytaxi.yellow_tripdata_ml`
+));
+
+-- [예측] 실제 데이터를 넣어 예측된 팁 금액을 확인
+SELECT * FROM ML.PREDICT(MODEL `nytaxi.tip_model`, (
+    SELECT * FROM `nytaxi.yellow_tripdata_ml`
+));
+
+-- [설명] 예측값과 함께 어떤 변수(거리, 위치 등)가 결과에 가장 큰 영향을 줬는지 상위 3개 노출
+SELECT * FROM ML.EXPLAIN_PREDICT(MODEL `nytaxi.tip_model`, (
+    SELECT * FROM `nytaxi.yellow_tripdata_ml`
+), STRUCT(3 as top_k_features));
+
+```
+
+---
+
+## 4. 고도화: 하이퍼파라미터 튜닝 (Hyperparameter Tuning)
+
+더 정확한 모델을 만들기 위해 시스템이 스스로 최적의 설정값을 찾는 과정입니다.
+
+```sql
+CREATE OR REPLACE MODEL `nytaxi.tip_hyperparam_model`
+OPTIONS (
+    model_type='linear_reg',
+    input_label_cols=['tip_amount'],
+    num_trials=5,               -- 5가지 다른 설정을 시도해봄
+    max_parallel_trials=2,      -- 동시에 2개씩 실험해서 시간 단축
+    l1_reg=hparam_range(0, 20), -- 과적합 방지용 규제 강도를 0~20 사이에서 찾음
+    l2_reg=hparam_candidates([0, 0.1, 1, 10]) -- 후보군 중 최적값 선택
+) AS
+SELECT * FROM `nytaxi.yellow_tripdata_ml` WHERE tip_amount IS NOT NULL;
+
+```
+
+---
+
+## 5. 결론: 데이터 엔지니어의 역할
+
+이 과정에서 데이터 엔지니어의 진짜 역할은 **"분석가와 데이터 과학자가 SQL만으로 즉시 모델을 만들 수 있도록 정제된 마트(Table)를 구축해주는 것"**입니다.
+
+* 데이터 이동을 없애 성능을 확보하고,
+* 복잡한 전처리를 `TRANSFORM` 등으로 자동화하며,
+* 최종적으로 비즈니스 가치(예: 팁 예측을 통한 수익 최적화)를 빠르게 창출하게 돕는 것이 핵심입니다.
+
+**이제 BigQuery 콘솔에서 직접 이 쿼리들을 돌려보세요! 모델 생성 후 `ML.EVALUATE` 결과에서 오차가 얼마나 적게 나오는지 확인하는 것이 다음 목표입니다.** 🚀😃
+
 
 
 
