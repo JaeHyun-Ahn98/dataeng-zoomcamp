@@ -401,7 +401,107 @@ SELECT * FROM `nytaxi.yellow_tripdata_ml` WHERE tip_amount IS NOT NULL;
 * 복잡한 전처리를 `TRANSFORM` 등으로 자동화하며,
 * 최종적으로 비즈니스 가치(예: 팁 예측을 통한 수익 최적화)를 빠르게 창출하게 돕는 것이 핵심입니다.
 
-**이제 BigQuery 콘솔에서 직접 이 쿼리들을 돌려보세요! 모델 생성 후 `ML.EVALUATE` 결과에서 오차가 얼마나 적게 나오는지 확인하는 것이 다음 목표입니다.** 🚀😃
+---
+
+# 🚀 BigQuery ML 모델 외부 배포 (Docker Serving) 가이드
+
+이 가이드는 BigQuery에서 만든 모델을 추출하여 **실제 서비스용 API 서버**로 구축하는 전 과정을 다룹니다.
+
+## 📍 주요 도구 및 옵션 설명
+
+* **`bq` (BigQuery CLI)**: BigQuery 데이터를 제어하고 모델을 파일로 추출합니다.
+* **`gsutil` (Cloud Storage CLI)**: 구글 클라우드 버킷(GCS)과 로컬 간의 파일 전송을 관리합니다.
+* **`docker`**: 독립된 실행 환경을 제공하며, 여기서 **8501 포트**를 사용합니다.
+* **왜 8501인가요?**: TensorFlow Serving의 기본 설정입니다. **8500**은 gRPC(고성능 통신)용, **8501**은 우리가 흔히 쓰는 REST API(HTTP) 통신용으로 약속되어 있습니다.
+
+* **`-X POST`**: 데이터를 서버에 보낼 때 "이 데이터를 처리해줘"라고 요청하는 HTTP 방식(Method)입니다.
+* **`:predict`**: TensorFlow Serving API의 약속된 경로입니다. 이 키워드가 붙어야 서버가 "아, 예측을 해달라는 거구나!"라고 인식합니다.
+
+---
+
+## 1️⃣ 단계: BigQuery 모델 추출 (Extract)
+
+BigQuery 내부의 모델을 파일 형태로 꺼내어 구글 클라우드 스토리지(GCS)에 저장합니다.
+
+* **[기본 문법]** `bq extract -m [데이터셋].[모델명] gs://[버킷이름]/[경로]`
+* **[실제 사례]** 
+```bash
+bq extract -m zoomcamp.tip_model gs://jaehyun-dataeng-kestra-bucket/tip_model
+```
+
+> **설명:** `bq` 도구로 모델을 추출합니다. 화면에 반응이 없어도 배경에서 복사가 진행되며, 완료되면 버킷에 모델 파일이 생성됩니다.
+
+---
+
+## 2️⃣ 단계: 모델 파일 가져오기 및 구조화
+
+GCS 버킷의 파일을 가상 머신(Cloud Shell)으로 가져와서 Docker용 폴더 구조로 정리합니다.
+
+* **[기본 문법]** `gsutil cp -r gs://[버킷이름]/[경로] [가상머신경로]`
+* **[실제 사례]**
+```bash
+# 1. gsutil을 사용하여 버킷에서 가상머신 임시 폴더로 다운로드
+mkdir -p /tmp/model
+gsutil cp -r gs://jaehyun-dataeng-kestra-bucket/tip_model /tmp/model
+
+# 2. TensorFlow Serving 규격(모델명/버전번호) 폴더 생성 및 복사
+mkdir -p serving_dir/tip_model/1
+cp -r /tmp/model/tip_model/* serving_dir/tip_model/1
+```
+
+> **설명:** `gsutil`로 파일을 옮긴 후, 엔진이 인식할 수 있도록 반드시 버전 번호(`1`) 폴더를 만들어야 합니다.
+
+---
+
+## 3️⃣ 단계: Docker로 API 서버 실행 (Serving)
+
+서빙 전용 엔진 이미지를 사용해 모델을 실시간 API 서버로 구동합니다.
+
+* **[기본 문법]** `docker run -p 8501:8501 --mount type=bind,source=$(pwd)/[서빙폴더]/[모델명],target=/models/[모델명] -e MODEL_NAME=[모델명] -t tensorflow/serving &`
+* **[실제 사례]**
+```bash
+# 이미지 다운로드
+docker pull tensorflow/serving
+
+# 컨테이너 실행 (8501 포트 개방)
+docker run -p 8501:8501 \
+  --mount type=bind,source=$(pwd)/serving_dir/tip_model,target=/models/tip_model \
+  -e MODEL_NAME=tip_model -t tensorflow/serving &
+```
+
+> **설명:** `docker`를 통해 서버를 켭니다. `-p 8501:8501` 옵션 덕분에 우리는 외부에서 `8501` 포트를 통해 이 서버에 접속할 수 있게 됩니다.
+
+---
+
+## 4️⃣ 단계: 최종 예측 테스트 및 결과 확인
+
+서버에 데이터를 보내서 AI가 계산한 예측값을 응답받습니다.
+
+* **[기본 문법]** `curl -d '{"instances": [[데이터]]}' -X POST http://localhost:8501/v1/models/[모델명]:predict`
+* **[실제 사례]**
+```bash
+curl -d '{"instances": [{"passenger_count":1, "trip_distance":12.2, "PULocationID":"193", "DOLocationID":"264", "payment_type":"2","fare_amount":20.4,"tolls_amount":0.0}]}' \
+-X POST http://localhost:8501/v1/models/tip_model:predict
+```
+
+> **설명:** `-X POST`로 데이터를 전송하고, 주소 끝에 `:predict`를 붙여 예측 명령을 내립니다.
+
+---
+
+## 🏆 최종 결과물 해석 (Final Output)
+
+**응답 데이터:**
+
+```json
+{
+    "predictions": [
+        [0.24970640344417916]
+    ]
+}
+```
+
+* **의미:** 모델이 입력된 주행 조건(12.2마일 등)을 분석하여, 예상되는 팁 금액은 **약 0.25달러**라고 답변한 것입니다.
+* **핵심:** 이제 `8501` 포트와 `:predict` 경로가 열려 있으므로, 이 주소를 아는 어떤 프로그램이든 데이터를 보내 예측 결과를 받아볼 수 있습니다.
 
 
 
