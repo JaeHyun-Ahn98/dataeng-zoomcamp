@@ -128,3 +128,90 @@
 * **`ref()` 함수 사용:** 테이블 이름을 직접 쓰지 말고 `ref('model_name')`를 사용하세요. dbt가 데이터 간의 선후 관계(Lineage)를 자동으로 관리해 줍니다.
 * **버전 관리:** 모든 변경 사항은 새 브랜치를 만들어 작업하고, 완료 후 `main` 브랜치로 **Pull Request(PR)**를 보내 병합하세요.
 * **테스트:** 데이터 무결성을 위해 `tests/` 폴더를 활용하여 비즈니스 로직과 데이터 품질을 지속적으로 검증하세요.
+
+---
+
+요청하신 대로 실제 실습에 사용된 핵심 코드를 각 단계에 배치하여, 나중에 다시 봐도 흐름과 로직을 한눈에 파악할 수 있도록 가이드를 재구성했습니다.
+
+---
+
+## 📂 6. Intermediate 모델: 데이터 통합 (Union)
+
+Staging 레이어에서 정제된 개별 소스들을 하나로 결합하여 분석을 위한 단일 통합 데이터셋을 구축하는 단계입니다.
+
+### 1. 실습 목적: 데이터 통합 (Data Integration)
+
+* **목적:** 분리된 Green 및 Yellow 택시 데이터를 통합하여 전체 산업에 대한 통찰력을 확보합니다.
+* **효과:** 파편화된 소스를 동일한 규격으로 맞춘 '단일 진실 공급원(Single Source of Truth)'을 생성합니다.
+
+### 2. 주요 실습 과정 및 코드 (int_trips_unioned.sql)
+
+직접적인 테이블 참조 대신 `ref()` 함수를 사용하여 모델 간 의존성을 연결하고 수직 결합(`UNION ALL`)을 수행했습니다.
+
+```sql
+with green_tripdata as (
+    select * from {{ ref('stg_green_tripdata') }}
+),
+yellow_tripdata_partitioned as (
+    select * from {{ ref('stg_yellow_tripdata') }}
+),
+trips_unioned as (
+    select * from green_tripdata
+    union all
+    select * from yellow_tripdata_partitioned
+)
+select * from trips_unioned
+
+```
+
+### 3. 핵심 비즈니스 로직 적용 (Staging 레이어 정제)
+
+통합 모델(`int`)이 정상적으로 동작하도록 각 스테이징 모델에서 데이터 규격을 맞추는 작업을 수행했습니다.
+
+* **상숫값 생성 및 순서 동기화 (Yellow 데이터):**
+Green 데이터에는 있고 Yellow에는 없는 컬럼을 상숫값(`1`, `0`)으로 생성하여 컬럼 개수와 순서를 맞췄습니다.
+```sql
+-- stg_yellow_tripdata.sql 예시
+1 as trip_type,  -- yellow taxis can only be street-hail
+0 as ehail_fee   -- yellow taxis do not have ehail fees
+
+```
+
+
+* **데이터 타입 통일 (Casting):**
+`UNION ALL`의 필수 조건인 데이터 타입 일치를 위해 모든 핵심 컬럼에 `CAST` 문법을 적용했습니다.
+```sql
+-- 공통 적용 예시
+CAST(store_and_fwd_flag as string) as store_and_fwd_flag,
+CAST(fare_amount as numeric) as fare_amount
+
+```
+
+
+
+---
+
+## 💡 분석 엔지니어링 핵심 포인트 (Key Takeaways)
+
+### 1. 계층형 모델링 (Layered Modeling)
+
+* **역할 분리:** 데이터 정제는 **Staging**에서, 통합 및 비즈니스 결합은 **Intermediate**에서 담당하여 코드의 가독성과 재사용성을 높입니다.
+
+### 2. 의존성 관리와 계보 (Lineage)
+
+* `ref()` 함수를 사용하면 dbt가 데이터 흐름을 시각화(Lineage Graph)할 수 있게 도와주며, 상위 모델이 변경될 때 하위 모델이 안전하게 업데이트되도록 보장합니다.
+
+### 3. 방어적 SQL 작성 (Defensive Coding)
+
+* 소스 데이터의 스키마는 언제든 변할 수 있습니다. 실습에서 경험한 타입 불일치 에러를 방지하기 위해, 명시적으로 타입을 지정(`CAST`)하는 습관이 파이프라인의 안정성을 결정합니다.
+
+---
+
+## 🛠️ 실전 트러블슈팅 요약
+
+* **Location 관리:** BigQuery 데이터셋 위치(`asia-northeast1`)와 dbt Cloud 설정을 일치시켜 리전 에러를 해결했습니다.
+* **명명 규칙(Naming):** 계산된 컬럼이나 변환된 데이터에는 반드시 별칭(`AS [이름]`)을 부여해야 데이터베이스가 컬럼명을 정확히 인식합니다.
+
+---
+
+이제 이 가이드를 바탕으로 다음 단계인 **Marts 모델(최종 분석용 테이블) 구축**을 진행할 준비가 모두 끝났습니다. 다음 실습으로 넘어갈까요?
