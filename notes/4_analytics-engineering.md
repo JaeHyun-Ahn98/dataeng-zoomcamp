@@ -204,10 +204,6 @@ CAST(fare_amount as numeric) as fare_amount
 
 ---
 
-작성해주신 훌륭한 가이드 문서의 흐름에 맞춰, **"7. dbt Seed & Macro 활용 및 최종 Fact 모델 구축"** 섹션으로 구성했습니다. 기존 문서의 번호와 스타일을 유지하여 바로 하단에 추가하실 수 있습니다.
-
----
-
 ## 📂 7. dbt Seed & Macro 활용 및 최종 Fact 모델 구축
 
 ### 1. 정적 데이터 추가 (dbt Seed)
@@ -218,15 +214,18 @@ CAST(fare_amount as numeric) as fare_amount
 * **수행 작업**: `seeds/` 디렉토리에 CSV 파일 배치 후 터미널에서 `dbt seed` 명령어 실행
 * **결과**: 데이터베이스 내에 `taxi_zone_lookup` 테이블이 생성되어 `ref()` 함수로 어디서든 호출할 수 있는 상태가 됨
 
+---
+
 ### 2. Seed 참조 및 데이터 정제 (`dim_zones`)
 
-생성된 Seed 테이블을 SQL 모델에서 불러와 분석에 적합한 형태로 정제하는 단계입니다.
+생성된 Seed 테이블을 SQL 모델에서 어떻게 불러와서 사용하는지 익히는 단계입니다.
 
 * **수행 작업**: `ref('taxi_zone_lookup')`를 사용하여 시드 데이터를 참조하는 모델 작성
 * **결과 코드 (`dim_zones.sql`)**:
 
 ```sql
 with taxi_zone_lookup as (
+    -- dbt seed로 생성된 테이블을 참조
     select * from {{ ref('taxi_zone_lookup') }}
 ),
 renamed as (
@@ -241,40 +240,106 @@ select * from renamed
 
 ```
 
-### 3. 매크로(Macro) 정의 및 활용
+---
 
-반복되는 비즈니스 로직을 모듈화하여 자바의 함수처럼 재사용하는 방법을 익히는 단계입니다.
+### 3. 매크로 정의 및 활용 (`dim_vendors` & `fct_trips`)
 
-* **수행 작업**: `macros/` 폴더에 `.sql` 파일을 생성하여 공통 로직 정의
-* **주요 매크로 예시**:
-* `get_vendor_names`: Vendor ID를 실제 업체명으로 변환
-* `get_payment_type_description`: 결제 수단 코드를 텍스트 설명으로 변환
+반복되는 로직을 모듈화하여 자바의 함수처럼 사용하는 방법을 익히는 단계입니다.
 
+* **수행 작업 1 (매크로 생성)**: `macros/` 폴더에 각각의 `.sql` 파일 작성
+* **매크로 코드 1 (`get_vendor_names.sql`)**:
 
-* **결과**: 로직 수정 시 매크로 파일 한 곳만 수정하면 이를 사용하는 모든 모델에 자동 반영됨
+```sql
+{% macro get_vendor_names(vendor_id) -%}
+case
+    when {{ vendor_id }} = 1 then 'Creative Mobile Technologies, LLC'
+    when {{ vendor_id }} = 2 then 'VeriFone Inc'
+    when {{ vendor_id }} = 4 then 'Unknown Vendor'
+end 
+{%- endmacro %}
 
-### 4. 최종 Fact 모델 통합 (`fct_trips`)
+```
 
-앞서 만든 모든 부품(Seed, Macro, Join)을 결합하여 분석가와 대시보드 도구가 사용할 최종 테이블을 완성하는 단계입니다.
+* **매크로 코드 2 (`get_payment_type_description.sql`)**:
 
-* **핵심 구현 로직**:
-1. **고유 PK 생성**: MD5 해싱을 이용해 데이터의 고유 지문(`tripid`) 생성 (Java의 Hashing 원리 활용)
-2. **데이터 풍부화**: 매크로를 적용해 코드값을 텍스트로 변환
-3. **다중 JOIN**: 동일한 장소 사전(`dim_zones`)을 두 번 결합하여 승차지와 하차지 명칭을 각각 추출
+```sql
+{% macro get_payment_type_description(payment_type) -%}
+    case {{ payment_type }}
+        when 1 then 'Credit card'
+        when 2 then 'Cash'
+        when 3 then 'No charge'
+        when 4 then 'Dispute'
+        when 5 then 'Unknown'
+        when 6 then 'Voided trip'
+        else 'EMPTY'
+    end
+{%- endmacro %}
 
+```
 
-
-### 5. 고급 기술: dbt 패키지 (`dbt_utils`) 활용
-
-복잡한 SQL 로직을 표준화된 외부 라이브러리로 대체하여 생산성을 높이는 단계입니다.
-
-* **수행 작업**: `packages.yml` 설정 후 `dbt deps` 명령어로 설치
-* **PK 생성 최적화**:
-* **기존**: `to_hex(md5(cast(concat(...))))`
-* **패키지**: `{{ dbt_utils.generate_surrogate_key(['vendor_id', 'pickup_datetime']) }}`
-
-
-* **효과**: 코드의 가독성이 높아지고 데이터베이스별 문법 차이를 패키지가 자동으로 해결해줌
+* **수행 작업 2 (매크로 적용)**: `dim_vendors.sql` 또는 `fct_trips.sql`에서 위 매크로들을 호출해 데이터 변환
 
 ---
+
+### 4. 최종 모델 통합 (`fct_trips`)
+
+앞서 만든 모든 부품(Seed, Macro, Join)을 결합하여 분석용 최종 Fact 테이블을 완성하는 단계입니다.
+
+* **대상 작업**: 고유 PK 생성(Hashing), 결제 수단 매크로 적용, 장소 정보 2중 JOIN
+* **결과 코드 (`fct_trips.sql`)**:
+
+```sql
+with trips_unioned as (
+    select * from {{ ref('int_trips_unioned') }}
+), 
+taxi_zone_lookup as (
+    select * from {{ ref('taxi_zone_lookup') }}
+)
+select 
+    -- 1. 직접 만든 PK (MD5 해싱을 이용한 고유 지문 생성)
+    to_hex(md5(cast(concat(coalesce(cast(t.vendor_id as string), ''), '-', coalesce(cast(t.pickup_datetime as string), '')) as string))) as tripid,
+    
+    -- 2. 결제 수단 변환 매크로 적용 (정의한 매크로 호출)
+    {{ get_payment_type_description('t.payment_type') }} as payment_type_description,
+    
+    -- 3. 장소 정보 조인 (승차/하차 각 1회씩 총 2회)
+    pickup_zone.borough as pickup_borough, 
+    pickup_zone.zone as pickup_zone, 
+    dropoff_zone.borough as dropoff_borough, 
+    dropoff_zone.zone as dropoff_zone,
+    
+    t.pickup_datetime, t.dropoff_datetime, t.fare_amount, t.total_amount
+from trips_unioned t
+inner join taxi_zone_lookup as pickup_zone on t.pickup_location_id = pickup_zone.locationid
+inner join taxi_zone_lookup as dropoff_zone on t.dropoff_location_id = dropoff_zone.locationid
+
+```
+
+---
+
+### 5. 패키지 설치 및 활용 (`dbt_utils`)
+
+직접 짠 복잡한 SQL 로직을 표준화된 외부 패키지로 대체하여 생산성을 높이는 단계입니다.
+
+* **대상 패키지**: `dbt-labs/dbt_utils`
+* **수행 작업**:
+1. 프로젝트 루트에 `packages.yml` 파일 생성 및 패키지 정보 작성
+2. 터미널에서 `dbt deps` 명령어를 입력하여 필요한 라이브러리 다운로드
+
+
+* **결과**: 직접 구현한 해시 PK 생성 로직을 `generate_surrogate_key` 함수 하나로 대체 가능함
+
+#### 패키지 적용 예시 (PK 생성)
+
+```sql
+-- packages.yml 예시
+packages:
+  - package: dbt-labs/dbt_utils
+    version: 1.1.1
+
+-- fct_trips.sql 적용 예시 (패키지 함수 사용 시)
+{{ dbt_utils.generate_surrogate_key(['t.vendor_id', 't.pickup_datetime']) }} as tripid
+
+```
+
 
