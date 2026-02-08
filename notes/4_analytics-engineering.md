@@ -204,4 +204,77 @@ CAST(fare_amount as numeric) as fare_amount
 
 ---
 
-이제 이 가이드를 바탕으로 다음 단계인 **Marts 모델(최종 분석용 테이블) 구축**을 진행할 준비가 모두 끝났습니다. 다음 실습으로 넘어갈까요?
+작성해주신 훌륭한 가이드 문서의 흐름에 맞춰, **"7. dbt Seed & Macro 활용 및 최종 Fact 모델 구축"** 섹션으로 구성했습니다. 기존 문서의 번호와 스타일을 유지하여 바로 하단에 추가하실 수 있습니다.
+
+---
+
+## 📂 7. dbt Seed & Macro 활용 및 최종 Fact 모델 구축
+
+### 1. 정적 데이터 추가 (dbt Seed)
+
+데이터 분석의 기준이 되는 외부 참조 데이터를 프로젝트에 이식하는 단계입니다.
+
+* **대상 파일**: `taxi_zone_lookup.csv` (위치 ID별 구역명 매칭 데이터)
+* **수행 작업**: `seeds/` 디렉토리에 CSV 파일 배치 후 터미널에서 `dbt seed` 명령어 실행
+* **결과**: 데이터베이스 내에 `taxi_zone_lookup` 테이블이 생성되어 `ref()` 함수로 어디서든 호출할 수 있는 상태가 됨
+
+### 2. Seed 참조 및 데이터 정제 (`dim_zones`)
+
+생성된 Seed 테이블을 SQL 모델에서 불러와 분석에 적합한 형태로 정제하는 단계입니다.
+
+* **수행 작업**: `ref('taxi_zone_lookup')`를 사용하여 시드 데이터를 참조하는 모델 작성
+* **결과 코드 (`dim_zones.sql`)**:
+
+```sql
+with taxi_zone_lookup as (
+    select * from {{ ref('taxi_zone_lookup') }}
+),
+renamed as (
+    select
+        locationid as location_id,
+        borough,
+        zone,
+        service_zone
+    from taxi_zone_lookup
+)
+select * from renamed
+
+```
+
+### 3. 매크로(Macro) 정의 및 활용
+
+반복되는 비즈니스 로직을 모듈화하여 자바의 함수처럼 재사용하는 방법을 익히는 단계입니다.
+
+* **수행 작업**: `macros/` 폴더에 `.sql` 파일을 생성하여 공통 로직 정의
+* **주요 매크로 예시**:
+* `get_vendor_names`: Vendor ID를 실제 업체명으로 변환
+* `get_payment_type_description`: 결제 수단 코드를 텍스트 설명으로 변환
+
+
+* **결과**: 로직 수정 시 매크로 파일 한 곳만 수정하면 이를 사용하는 모든 모델에 자동 반영됨
+
+### 4. 최종 Fact 모델 통합 (`fct_trips`)
+
+앞서 만든 모든 부품(Seed, Macro, Join)을 결합하여 분석가와 대시보드 도구가 사용할 최종 테이블을 완성하는 단계입니다.
+
+* **핵심 구현 로직**:
+1. **고유 PK 생성**: MD5 해싱을 이용해 데이터의 고유 지문(`tripid`) 생성 (Java의 Hashing 원리 활용)
+2. **데이터 풍부화**: 매크로를 적용해 코드값을 텍스트로 변환
+3. **다중 JOIN**: 동일한 장소 사전(`dim_zones`)을 두 번 결합하여 승차지와 하차지 명칭을 각각 추출
+
+
+
+### 5. 고급 기술: dbt 패키지 (`dbt_utils`) 활용
+
+복잡한 SQL 로직을 표준화된 외부 라이브러리로 대체하여 생산성을 높이는 단계입니다.
+
+* **수행 작업**: `packages.yml` 설정 후 `dbt deps` 명령어로 설치
+* **PK 생성 최적화**:
+* **기존**: `to_hex(md5(cast(concat(...))))`
+* **패키지**: `{{ dbt_utils.generate_surrogate_key(['vendor_id', 'pickup_datetime']) }}`
+
+
+* **효과**: 코드의 가독성이 높아지고 데이터베이스별 문법 차이를 패키지가 자동으로 해결해줌
+
+---
+
