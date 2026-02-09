@@ -342,4 +342,195 @@ packages:
 
 ```
 
+---
+
+## 📂 8. dbt Tests: 데이터 품질 테스트
+
+데이터 엔지니어링에서 가장 위험한 것은 "잘못된 데이터가 조용히 대시보드에 올라가는 것"입니다. dbt는 이를 방지하기 위한 강력한 테스트 환경을 제공합니다.
+
+### 1. 범용 테스트 (Generic Tests)
+
+`schema.yml` 또는 `sources.yml`에 설정만 하면 dbt가 자동으로 수행하는 검증입니다.
+
+* **`unique`**: 중복 값 체크
+* **`not_null`**: 빈 값(NULL) 체크
+* **`accepted_values`**: 지정된 값 리스트에 포함되는지 확인
+* **`relationships`**: 참조 무결성 확인
+
+### 2. 단별/단위 테스트 (Singular & Unit Tests)
+
+* **Singular Test**: `tests/` 폴더에 직접 SQL을 작성하여, 쿼리 결과가 **1건이라도 나오면 실패**로 처리합니다.
+* **Unit Test**: 가상의 데이터(Fixture)를 넣어 SQL 로직이 수학적으로 맞는지 미리 검증합니다.
+
+---
+
+## 📂 9. dbt Documentation: 자동화된 데이터 설명서
+
+dbt docs는 분석가와 협업하기 위한 **최종 명세서**입니다. YAML 파일에 적힌 설명이 웹 브라우저 화면으로 자동 변환됩니다.
+
+### 1. 소스 및 모델 문서화 코드 예시
+
+**① `models/staging/sources.yml` (원본 데이터 정의)**
+
+```yaml
+version: 2
+
+sources:
+  - name: raw_data
+    description: "Raw data sources for NYC taxi rides"
+    database: kestra-sandbox-485208 # Project ID
+    schema: zoomcamp                 # Dataset Name
+    tables: 
+      - name: green_tripdata
+        description: Raw green taxi trip data
+        columns:
+          - name: vendorid
+            description: |
+              A code indicating the provider associated with the trip record.
+                  1: 'Creative Mobile Technologies',
+                  2: 'VeriFone Inc.',
+                  3: 'Unknown/Other '
+            data_type: integer
+            meta:
+              pii: false
+              ownership: data_team
+              importance: high
+      - name: yellow_tripdata_partitioned
+        description: Raw yellow taxi trip data
+
+```
+
+**② `models/schema.yml` (가공된 모델 정의)**
+
+```yaml
+version: 2
+
+models:
+  - name: dim_vendors
+    description: "This table contains vendor information."
+    columns:
+      - name: vendor_id
+        description: "The unique identifier for each vendor."
+      - name: vendor_name
+        description: "The name of the vendor."
+      - name: vendor_address
+        description: "The address of the vendor."
+      - name: vendor_phone
+        description: "The contact phone number for the vendor."
+      - name: created_at
+        description: "The timestamp when the vendor record was created."
+      - name: updated_at
+        description: "The timestamp when the vendor record was last updated."
+
+```
+
+### 2. dbt Cloud에서 문서 확인하기
+
+* **명령어**: 터미널에 `dbt docs generate` 입력
+* **확인**: IDE 상단 또는 하단 결과창의 **[View Docs]** 버튼 클릭
+* **핵심 기능**:
+* **Lineage Graph**: 데이터가 소스부터 마트까지 흐르는 계보를 시각화합니다.
+* **Compiled SQL**: 실제 BigQuery에서 실행되는 순수 SQL을 확인할 수 있습니다.
+
+
+
+---
+
+## 📂 10. dbt Packages: 검증된 라이브러리 활용
+
+직접 복잡한 SQL을 짜지 않고, 전 세계 데이터 엔지니어들이 공유한 패키지를 가져와 생산성을 높입니다.
+
+### 1. 패키지 설치 (`packages.yml`)
+
+프로젝트 루트 폴더에 파일을 만들고 아래 내용을 작성합니다.
+
+```yaml
+packages:
+  - package: dbt-labs/dbt_utils
+    version: 1.3.3
+
+```
+
+* **설치 명령어**: `dbt deps`
+* **결과**: `packages-lock.yml` 파일이 생성되며 패키지 의존성이 고정됩니다.
+
+### 2. 패키지 활용 예시: `dbt_utils`를 이용한 고도화
+
+`int_trips.sql` 모델에서 패키지를 활용해 PK 생성(Surrogate Key) 및 데이터 풍부화를 수행하는 코드입니다.
+
+```sql
+-- Enrich and deduplicate trip data
+-- Demonstrates enrichment and surrogate key generation
+
+with unioned as (
+    select * from {{ ref('int_trips_unioned') }}
+),
+
+payment_types as (
+    select * from {{ ref('payment_type_lookup') }}
+),
+
+cleaned_and_enriched as (
+    select
+        -- 1. dbt_utils 패키지로 고유 Surrogate Key 생성 (MD5 해싱 자동화)
+        {{ dbt_utils.generate_surrogate_key(['u.vendor_id', 'u.pickup_datetime', 'u.pickup_location_id', 'u.service_type']) }} as trip_id,
+
+        -- Identifiers
+        u.vendor_id,
+        u.service_type,
+        u.rate_code_id,
+
+        -- Location IDs
+        u.pickup_location_id,
+        u.dropoff_location_id,
+
+        -- Timestamps
+        u.pickup_datetime,
+        u.dropoff_datetime,
+
+        -- Trip details
+        u.store_and_fwd_flag,
+        u.passenger_count,
+        u.trip_distance,
+        u.trip_type,
+
+        -- Payment breakdown
+        u.fare_amount,
+        u.extra,
+        u.mta_tax,
+        u.tip_amount,
+        u.tolls_amount,
+        u.ehail_fee,
+        u.improvement_surcharge,
+        u.total_amount,
+
+        -- 2. 외부 테이블과 Join하여 정보 풍부화
+        coalesce(u.payment_type, 0) as payment_type,
+        coalesce(pt.description, 'Unknown') as payment_type_description
+
+    from unioned u
+    left join payment_types pt
+        on coalesce(u.payment_type, 0) = pt.payment_type
+)
+
+select * from cleaned_and_enriched
+
+-- 3. 중복 데이터 제거 (Deduplication)
+qualify row_number() over(
+    partition by vendor_id, pickup_datetime, pickup_location_id, service_type
+    order by dropoff_datetime
+) = 1
+
+```
+
+---
+
+## 💡 종합 요약
+
+| 단계 | 역할 | 핵심 도구 |
+| --- | --- | --- |
+| **테스트 (Test)** | 데이터 무결성 및 품질 보증 | `schema.yml`, `tests/` |
+| **문서화 (Docs)** | 협업을 위한 데이터 명세서/지도 생성 | `dbt docs generate`, Lineage |
+| **패키지 (Package)** | 표준화된 로직 재사용 (PK 생성 등) | `dbt_utils`, `dbt deps` |
+
 
