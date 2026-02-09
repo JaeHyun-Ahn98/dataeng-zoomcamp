@@ -6,5 +6,21 @@ sources:
     database: kestra-sandbox-485208 # Project ID    ( if Use BigQuery)
     schema: zoomcamp                # Dataset Name  ( if Use BigQuery)  
     tables: 
-      - name: yellow_tripdata_partitioned
       - name: green_tripdata
+        description: Raw green taxi trip data
+        columns:
+          - name: vendorid
+            description: |
+              A code indicating the provider associated with the trip record.
+                  1: 'Creative Mobile Technologies',
+                  2: 'VeriFone Inc.',
+                  3: 'Unknown/Other '
+            data_type: integer
+            meta:
+              pii: false
+              ownership: data_team
+              importance: high
+              formatting: none
+      - name: yellow_tripdata_partitioned
+        description: Raw yellow taxi trip data
+
