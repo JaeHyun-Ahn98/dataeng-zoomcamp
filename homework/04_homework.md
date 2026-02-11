@@ -75,7 +75,7 @@ dbt 프로젝트를 실행한 후, `fct_monthly_zone_revenue` 모델을 쿼리�
 
 * 12,998
 * 14,120
-* 12,184
+* 12,184 ✅
 * 15,421
 
 ---
@@ -86,7 +86,7 @@ dbt 프로젝트를 실행한 후, `fct_monthly_zone_revenue` 모델을 쿼리�
 
 어느 지역의 수익이 가장 높았나요?
 
-* East Harlem North
+* East Harlem North ✅
 * Morningside Heights
 * East Harlem South
 * Washington Heights South
@@ -99,7 +99,7 @@ dbt 프로젝트를 실행한 후, `fct_monthly_zone_revenue` 모델을 쿼리�
 
 * 500,234
 * 350,891
-* 384,624
+* 384,624 ✅
 * 421,509
 
 ---
@@ -118,7 +118,7 @@ dbt 프로젝트를 실행한 후, `fct_monthly_zone_revenue` 모델을 쿼리�
 `stg_fhv_tripdata` 모델의 전체 레코드 수는 얼마입니까?
 
 * 42,084,899
-* 43,244,693
+* 43,244,693 ✅
 * 22,998,722
 * 44,112,187
 

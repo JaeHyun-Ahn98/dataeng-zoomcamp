@@ -591,3 +591,188 @@ Jinja 문법(`ref`, `source` 등)이 적용된 코드를 실제 DB용 SQL로 변
 * **`dbt docs generate`**: 프로젝트의 모든 메타데이터를 분석하여 웹 기반의 문서 사이트 데이터를 생성합니다.
 
 ---
+
+## 📂 12. 실전 프로젝트: NYC FHV 데이터 파이프라인 구축 사례
+
+GitHub의 원본 데이터를 GCS로 적재하고, BigQuery와 dbt를 활용하여 분석용 스테이징 테이블을 생성하는 **ELT(Extract-Load-Transform)** 전체 공정 기록입니다.
+
+### 1단계: 데이터 수집 및 GCS 적재 (Extract & Load)
+
+Cloud Shell에서 `curl`과 `gsutil`을 사용하여 외부 소스 데이터를 내 컴퓨터를 거치지 않고 GCS 버킷으로 직접 전송했습니다.
+
+* **Cloud Shell 실행 명령어:**
+```bash
+# 1. 환경 변수 설정
+export BUCKET_NAME="jaehyun-dataeng-kestra-bucket"
+
+# 2. 2019년 1월~12월 데이터 반복 전송 (누락 시 특정 달만 지정 가능)
+for month in {01..12}; do
+  URL="https://github.com/DataTalksClub/nyc-tlc-data/releases/download/fhv/fhv_tripdata_2019-${month}.csv.gz"
+  echo "전송 중: 2019-${month} ..."
+  curl -L $URL | gsutil cp - gs://${BUCKET_NAME}/raw/fhv/fhv_tripdata_2019-${month}.csv.gz
+done
+
+```
+
+
+
+### 2단계: BigQuery 외부 테이블 생성 (Raw Layer)
+
+GCS에 저장된 `.csv.gz` 파일들을 물리적 복사 없이 BigQuery에서 즉시 조회 가능하도록 연결했습니다.
+
+* **BigQuery 외부 테이블 생성 쿼리:**
+```sql
+CREATE OR REPLACE EXTERNAL TABLE `kestra-sandbox-485208.zoomcamp.stg_fhv_tripdata_ext`
+(
+  dispatching_base_num STRING,
+  pickup_datetime TIMESTAMP,
+  dropoff_datetime TIMESTAMP,
+  PULocationID STRING,
+  DOLocationID STRING,
+  SR_Flag STRING,
+  Affiliated_base_number STRING
+)
+OPTIONS (
+  format = 'CSV',
+  uris = ['gs://jaehyun-dataeng-kestra-bucket/raw/fhv/fhv_tripdata_2019-*.csv.gz'],
+  skip_leading_rows = 1
+);
+
+```
+
+
+
+### 3단계: dbt 환경 설정 및 모델링 (Transform Layer)
+
+dbt를 사용하여 소스 데이터를 정의하고, 비즈니스 로직(필터링 및 타입 변환)을 적용했습니다.
+
+* **`models/staging/sources.yml` 설정:**
+```yaml
+version: 2
+sources:
+  - name: raw_data
+    database: kestra-sandbox-485208
+    schema: zoomcamp
+    tables: 
+      - name: green_tripdata
+      - name: yellow_tripdata_partitioned
+      - name: stg_fhv_tripdata_ext   # 생성한 외부 테이블 연결
+
+```
+
+
+* **`models/staging/stg_fhv_tripdata.sql` 개발:**
+```sql
+{{ config(materialized='view') }}
+
+select 
+    CAST(dispatching_base_num as string) as dispatching_base_num,
+    CAST(pickup_datetime as timestamp) as pickup_datetime,
+    CAST(dropOff_datetime as timestamp) as dropoff_datetime,
+    CAST(PUlocationID as integer) as pickup_location_id,
+    CAST(DOlocationID as integer) as dropoff_location_id,
+    CAST(SR_Flag as string) as sr_flag,
+    CAST(Affiliated_base_number as string) as affiliated_base_number
+from {{ source('raw_data', 'stg_fhv_tripdata_ext') }}
+where dispatching_base_num IS NOT NULL  -- 유효 데이터 필터링
+
+```
+
+
+
+### 4단계: 실행 및 최종 검증
+
+최종적으로 dbt 모델을 빌드하고 데이터 정합성을 확인했습니다.
+
+* **실행 명령어:** `dbt run -s stg_fhv_tripdata`
+* **검증 결과:** BigQuery에서 카운트 쿼리 실행 시 총 **43,244,693** 건 확인 (2019년 전체 데이터 적재 성공)
+
+---
+
+
+## 📂 13. dbt 도입 전후 비교: 파이프라인의 진화 (Before & After)
+
+데이터 오케스트레이터(Kestra)만 사용하던 **'전통적 방식'**에서 변환 전문 도구(dbt)를 결합한 **'현대적 방식'**으로의 전환 과정을 상세히 비교 분석합니다.
+
+---
+
+### 1️⃣ 아키텍처의 변화: "관심사의 분리"
+
+과거에는 Kestra라는 하나의 도구가 모든 책임을 졌다면, 현재는 각 도구가 가장 잘하는 일에 집중합니다.
+
+* **[Before] Kestra 중심 (Monolithic)**: 파일 전송, GCS 업로드, 스키마 정의, 데이터 정제(SQL)를 하나의 YAML 파일에서 처리. 코드가 길어지고 유지보수가 매우 어려움.
+* **[After] Kestra + dbt (Modular)**:
+* **Kestra**: 데이터 수집 및 적재(Inbound)와 스케줄링 총괄.
+* **dbt**: 적재된 데이터를 분석 가능한 형태로 변환(Transformation)하고 품질 테스트 및 문서화 전담.
+
+
+
+---
+
+### 2️⃣ 코드 레벨 비교: "노가다 SQL" vs "데이터 모델링"
+
+실제 Yellow/Green 택시 코드(과거)와 FHV 택시 코드(현재)를 통해 코드의 질적 변화를 체감할 수 있습니다.
+
+#### ❌ [과거] 수동 조립 방식 (Manual Raw SQL)
+
+테이블 하나를 만들 때마다 수백 줄의 **DDL(정의)**과 **DML(조작)**을 직접 작성해야 했습니다.
+
+```sql
+-- 1. 지루한 스키마 정의 (수십 개의 컬럼 타입 직접 지정)
+CREATE TABLE IF NOT EXISTS `project.dataset.yellow_tripdata` (
+    VendorID STRING,
+    tpep_pickup_datetime TIMESTAMP,
+    ... -- (중략) --
+    congestion_surcharge NUMERIC
+);
+
+-- 2. 복잡한 중복 제거 로직 (해시 생성)
+MD5(CONCAT(COALESCE(CAST(VendorID AS STRING), ""), ...))
+
+-- 3. 고난도 병합 로직 (MERGE 문 직접 작성)
+MERGE INTO `target_table` T 
+USING `source_table` S ON T.id = S.id
+WHEN NOT MATCHED THEN INSERT (...) VALUES (...);
+
+```
+
+> **문제점**: "어떻게(How)" 데이터를 넣을지에만 집중하느라 정작 데이터의 비즈니스 의미를 파악하기 힘듦.
+
+#### ✅ [현재] 설계도 기반 방식 (dbt Declarative SQL)
+
+dbt가 모든 인프라 제어(Create, Merge 등)를 대신하므로, 개발자는 **핵심 비즈니스 로직**에만 집중합니다.
+
+```sql
+{{ config(materialized='view') }}
+
+SELECT 
+    CAST(dispatching_base_num AS STRING) AS dispatching_base_num,
+    CAST(pickup_datetime AS TIMESTAMP) AS pickup_datetime,
+    ...
+FROM {{ source('raw_data', 'stg_fhv_tripdata_ext') }}
+WHERE dispatching_base_num IS NOT NULL -- 숙제 핵심 조건
+
+```
+
+> **개선점**: "무엇을(What)" 변환할지만 명시. 나머지는 dbt가 환경(Dev/Prod)에 맞춰 자동으로 SQL을 생성함.
+
+---
+
+### 3️⃣ 주요 변화 및 영향도 (Impact Analysis)
+
+| 비교 항목 | dbt 도입 전 (Only Kestra) | dbt 도입 후 (With dbt) | 영향 및 효과 |
+| --- | --- | --- | --- |
+| **코드 가독성** | 수백 줄의 스파게티 코드 | 10~20줄 내외의 클린 코드 | **유지보수 시간 80% 단축** |
+| **데이터 신뢰도** | 수동 쿼리로 육안 확인 | `dbt test` 통한 자동 검증 | **데이터 품질 보장** |
+| **운영 방식** | Kestra UI에서 직접 수정 | Git에 Push하면 자동 반영 | **Git-Ops 기반의 협업** 가능 |
+| **문서화** | 별도 문서 없으면 파악 불가 | `dbt docs`로 계보 자동 생성 | **데이터 거버넌스** 확립 |
+
+---
+
+### 4️⃣ 기술적 성장의 결론: "엔지니어링의 추상화"
+
+* **생산성 극대화**: 과거 Yellow Taxi 워크플로우를 짤 때 들었던 시간의 1/10만으로도 FHV 파이프라인을 구축.
+* **안정성 확보**: `MERGE` 문 실수로 데이터를 날려먹을 걱정 없이, dbt가 검증한 최적의 패턴으로 데이터를 적재합니다.
+* **확장성**: 이제 데이터 종류가 100개로 늘어나도 dbt의 **모듈화(Ref, Source)** 기능을 통해 일관된 품질로 관리.
+
+---
