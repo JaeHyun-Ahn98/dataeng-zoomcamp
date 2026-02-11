@@ -23,4 +23,6 @@ sources:
               formatting: none
       - name: yellow_tripdata_partitioned
         description: Raw yellow taxi trip data
+      - name: stg_fhv_tripdata_ext
+        description: Raw fhv trip data
 
