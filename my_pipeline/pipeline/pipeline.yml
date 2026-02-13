@@ -1,0 +1,22 @@
+name: nyc_taxi_pipeline
+schedule: monthly
+start_date: "2022-01-01"
+
+assets:
+  - name: ingestion.trips
+    type: python
+    executable: assets/ingestion/trips.py # 경로가 정확한지 확인하세요!
+    connection: bq-default
+    materialization:
+      type: table
+      strategy: append
+      destination: ingestion.trips
+      
+default_connections:
+  google_cloud_platform: bq-default
+
+variables:
+  taxi_types:
+    default: 
+      - "yellow"
+      - "green"
