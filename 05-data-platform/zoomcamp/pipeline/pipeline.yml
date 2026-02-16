@@ -1,0 +1,15 @@
+name: nyc-taxi
+
+schedule: daily
+
+start_date: "2022-01-01"
+
+default_connections:
+  google_cloud_platform: bq-default
+
+variables:
+  taxi_types:
+    type: array
+    items:
+      type: string
+    default: ["yellow", "green"]
