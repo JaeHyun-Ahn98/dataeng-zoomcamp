@@ -203,4 +203,145 @@ df.write.parquet('zones', mode='overwrite')
 | **FileNotFoundException: Hadoop bin...** | `winutils.exe` 미설치 | `HADOOP_HOME/bin` 안에 `winutils.exe` 파일 배치 확인 |
 | **AnalysisException: path ... already exists** | 저장하려는 폴더가 이미 존재 | `df.write.parquet(..., mode='overwrite')` 옵션 사용 |
 
+
 ---
+
+## 6. 🛠️ Spark 실전 데이터 엔지니어링 (Hands-on Practice)
+
+### 1) 로컬 환경의 두 창문: 8888 vs 4040
+
+컴퓨터 내부에서 실행 중인 서로 다른 서비스에 접속하기 위한 "문의 번호"
+
+* **`localhost:8888` (Jupyter Notebook / 작업장)**
+* **역할:** 내가 코드를 타이핑하고 실행하는 장소
+* **내용:** `.ipynb` 파일을 열고, 파이썬 코드를 쓰고, 실행 결과를 확인하는 인터페이스
+
+
+* **`localhost:4040` (Spark UI / 상황실)**
+* **역할:** Spark 엔진이 내부에서 어떻게 일하고 있는지 보여주는 모니터 상황실
+* **내용:** 내가 던진 작업(Job)이 몇 조각으로 나뉘었는지, 데이터 이동(**Exchange**)이 발생하는지 시각화(**DAG**)
+* **주의:** `spark = ...` 세션이 실행 중일 때만 열립니다.
+
+
+
+### 2) 노트북 실습 코드 5단계 (04_pyspark.ipynb)
+
+#### **Step 1: 환경 초기화 및 세션 생성**
+
+가장 먼저 Spark가 내 컴퓨터의 자원을 쓸 수 있도록 통로를 뚫어줍니다.
+
+```python
+import os
+import sys
+from pyspark.sql import SparkSession
+
+# 파이썬 경로 고정 (버전 호환성 에러 방지)
+os.environ['PYSPARK_PYTHON'] = sys.executable
+os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable
+
+# Spark 세션 시작 (상황실 4040 활성화)
+spark = SparkSession.builder \
+    .master("local[*]") \
+    .appName('test') \
+    .config("spark.driver.host", "127.0.0.1") \
+    .getOrCreate()
+
+```
+
+#### **Step 2: 데이터 구조 파악 (Pandas 활용)**
+
+전체 파일을 읽기 전, 작은 샘플(`head.csv`)로 데이터의 형태를 미리 공부합니다.
+
+```python
+import pandas as pd
+df_pandas = pd.read_csv('head.csv')
+
+# 데이터 타입 확인 (이걸 보고 Spark 스키마를 설계합니다)
+df_pandas.dtypes 
+df_spark.schema
+
+```
+
+#### **Step 3: 명시적 스키마 정의 (StructType)**
+
+Spark가 수 기가의 데이터를 훑으며 타입을 추측하는 시간을 아끼기 위해, 우리가 타입을 직접 지정합니다.
+
+```python
+from pyspark.sql import types
+
+schema = types.StructType([
+    types.StructField('hvfhs_license_num', types.StringType(), True),
+    types.StructField('dispatching_base_num', types.StringType(), True),
+    types.StructField('pickup_datetime', types.TimestampType(), True),
+    types.StructField('dropoff_datetime', types.TimestampType(), True),
+    types.StructField('PULocationID', types.IntegerType(), True),
+    types.StructField('DOLocationID', types.IntegerType(), True),
+    types.StructField('SR_Flag', types.StringType(), True)
+])
+
+```
+
+#### **Step 4: 데이터 로드 및 파티셔닝 (Partitioning)**
+
+이제 본 데이터(`fhvhv_tripdata_2021-01.csv`)를 읽고, 병렬 처리를 위해 데이터를 쪼갭니다.
+
+```python
+# 1. 정의한 스키마로 전체 CSV 읽기
+df = spark.read \
+    .option("header", "true") \
+    .schema(schema) \
+    .csv('fhvhv_tripdata_2021-01.csv')
+
+# 2. 파티셔닝 (데이터를 24조각으로 나누기)
+# 이 때 localhost:4040 상황실에 'Exchange'라는 기록이 남습니다.
+df = df.repartition(24)
+
+```
+
+#### **Step 5: Parquet 변환 및 저장**
+
+조각난 데이터를 Spark 전용 포맷인 Parquet으로 저장하며 실습을 마무리합니다.
+
+```python
+# 결과를 하드디스크에 저장
+df.write.mode('overwrite').parquet('fhvhv/2021/01/')
+
+# 실제 저장된 파일들 확인 (part-00000... 파일들이 24개 보임)
+import os
+os.listdir('fhvhv/2021/01/')
+
+```
+
+---
+
+## 7. 🧩 Spark 파티셔닝(Partitioning) 심화 이해
+
+### ① 파티션은 "일꾼들에게 나눠줄 도시락"입니다
+
+거대한 피자 한 판(대용량 파일)을 한 명이 먹으려면 오래 걸리지만, 여러 조각으로 잘라 나누어 먹으면 금방 끝납니다.
+
+* **병렬 처리:** 내 컴퓨터 코어가 4개라면, 최소 4개 이상의 파티션이 있어야 모든 코어가 동시에 일합니다.
+* **repartition(24)의 의미:** Spark에게 데이터를 공평하게 24덩어리로 다시 쪼개라고 명령하는 것입니다.
+
+### ② 셔플(Shuffle)과 Exchange
+
+데이터를 24개로 새로 나누려면, 기존에 흩어져 있던 데이터들을 다시 모으고 섞어야 합니다.
+
+* 이 과정을 **셔플(Shuffle)**이라고 부릅니다.
+* Spark UI(`4040`) 그래프에서는 이 셔플 단계를 **'Exchange'**라는 하늘색 박스로 표시합니다.
+
+### ③ 왜 CSV를 Parquet으로 바꾸나요?
+
+* **압축률:** CSV보다 훨씬 적은 용량을 차지합니다.
+* **컬럼 기반 저장:** 내가 원하는 컬럼(예: 날짜)만 골라 읽을 수 있어 검색 속도가 압도적으로 빠릅니다.
+* **파티셔닝 유지:** 저장할 때 24개로 나눴다면, 나중에 읽을 때도 24명의 일꾼이 바로 달려들 수 있습니다.
+
+---
+
+## 8. ✨ 최종 요약 및 실습 팁
+
+1. **Skipped 단계?** 에러가 아닙니다. Spark가 이미 계산된 결과를 재사용했다는 똑똑한 증거.
+2. **이름이 달라요?** 파이썬 버전 차이로 Spark UI에 이름이 `$anonfun`처럼 보일 수 있지만, 동작은 정상.
+3. **저장 에러?** 폴더가 이미 있으면 에러가 납니다. `mode('overwrite')`를 습관화.
+4. **성공 확인:** 저장 폴더에 `_SUCCESS` 파일과 `part-xxxxx` 파일 24개가 있다면 완벽하게 성공.
+

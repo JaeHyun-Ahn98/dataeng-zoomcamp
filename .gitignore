@@ -1,4 +1,6 @@
 *.parquet
+*.csv
+*.gz
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -212,4 +214,5 @@ __marimo__/
 logs/runs
 logs/*.log
 *.py[cod]
-logs/queries
+logs/queries*.csv
+*.gz

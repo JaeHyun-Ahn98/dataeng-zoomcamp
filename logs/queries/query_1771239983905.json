@@ -1,0 +1,15 @@
+{
+  "query": "SELECT COUNT(*) FROM ingestion.trips",
+  "timestamp": "2026-02-16T20:06:23.9053516+09:00",
+  "connection": "bq-default",
+  "success": true,
+  "columns": [
+    "f0_"
+  ],
+  "rows": [
+    [
+      3624164
+    ]
+  ],
+  "timeout": 1000
+}

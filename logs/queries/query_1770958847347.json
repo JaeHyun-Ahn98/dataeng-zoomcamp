@@ -1,0 +1,15 @@
+{
+  "query": "SELECT 1",
+  "timestamp": "2026-02-13T14:00:47.3477586+09:00",
+  "connection": "bq-default",
+  "success": true,
+  "columns": [
+    "f0_"
+  ],
+  "rows": [
+    [
+      1
+    ]
+  ],
+  "timeout": 1000
+}
