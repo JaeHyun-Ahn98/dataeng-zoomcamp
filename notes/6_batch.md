@@ -345,3 +345,73 @@ os.listdir('fhvhv/2021/01/')
 3. **저장 에러?** 폴더가 이미 있으면 에러가 납니다. `mode('overwrite')`를 습관화.
 4. **성공 확인:** 저장 폴더에 `_SUCCESS` 파일과 `part-xxxxx` 파일 24개가 있다면 완벽하게 성공.
 
+---
+
+## 8. 🏗️ Spark DataFrame 상세 가이드
+
+### 1. Spark DataFrame의 본질
+
+* **분산 컬렉션:** Pandas DataFrame이 단일 컴퓨터의 메모리(RAM)를 사용하는 것과 달리, Spark DataFrame은 클러스터의 여러 노드에 데이터를 **파티션(Partition)** 단위로 나누어 저장하고 병렬로 처리합니다.
+* **지연 실행 (Lazy Evaluation):** `select`, `filter` 같은 변환 연산(Transformation)을 호출할 때 즉시 계산하지 않고, 실행 계획(Lineage)만 세워둡니다. 실제 결과가 필요한 `show()`, `write()`, `collect()` 같은 액션(Action)이 호출될 때 비로소 최적화된 경로로 연산을 시작합니다.
+
+---
+
+### 2. 주요 변환 연산 (Transformations) 상세
+
+#### ① 컬럼 선택 및 필터링 (`select`, `filter`)
+
+* 특정 데이터만 추출하여 메모리 사용량을 줄이는 가장 기본적인 단계입니다.
+* **실습 예시:** `df.select('pickup_datetime', 'PULocationID').filter(df.PULocationID == 7)`
+
+#### ② 컬럼 생성 및 수정 (`withColumn`)
+
+* 기존 데이터를 가공하여 새로운 정보를 생성할 때 사용합니다. `pyspark.sql.functions`(주로 `F`로 임포트)와 함께 사용되는 것이 핵심입니다.
+* **날짜 처리:** `F.to_date()`를 사용하여 타임스탬프 문자열을 실제 날짜 타입으로 변환합니다.
+* **사용자 로직 적용:** `crazy_stuff_udf`와 같은 사용자 정의 함수를 연결하여 복잡한 문자열 가공을 수행합니다.
+
+#### ③ 내장 함수 (Built-in Functions) 활용
+
+* `F.col()`, `F.asc()`, `F.desc()` 등을 통해 컬럼을 객체처럼 다루며 정렬이나 복합 연산을 수행합니다.
+
+---
+
+### 3. 사용자 정의 함수 (UDF)의 내부 동작과 주의점
+
+UDF는 Spark DataFrame의 기능을 확장하는 강력한 도구이지만, 내부적으로 상당한 비용이 발생합니다.
+
+* **직렬화 비용:** JVM(Java)에 있는 데이터를 Python 프로세스로 보내기 위해 데이터를 직렬화하고, 결과를 다시 역직렬화하는 과정에서 성능 저하가 발생합니다.
+* **버전 민감도:** 현재 사용자님의 에러(`Python worker exited unexpectedly`)에서 보듯, Python 프로세스를 별도로 띄우기 때문에 외부 Python 환경(버전, 라이브러리)과의 호환성이 매우 중요합니다.
+* **권장 사항:** 성능 최적화를 위해 가급적 Spark 내장 함수(`F.when()`, `F.substring()` 등)를 우선 사용하고, 내장 함수로 구현이 불가능할 때만 UDF를 사용해야 합니다.
+
+---
+
+### 4. 데이터 구조 최적화: 파티셔닝(Partitioning)
+
+DataFrame의 성능은 데이터가 어떻게 나뉘어 있느냐에 결정됩니다.
+
+* **Repartition vs Coalesce:**
+* **`repartition(n)`**: 데이터를 완전히 새로 섞어서(Shuffle) 지정된 `n`개로 나눕니다. 데이터가 늘어날 때나 균등하게 배분할 때 사용합니다.
+* **`coalesce(n)`**: 셔플을 최소화하면서 파티션 수를 줄일 때 사용합니다.
+
+
+* **실습의 의미:** `df.repartition(24)`는 내 로컬 환경의 일꾼(코어)들이 골고루 작업할 수 있도록 데이터를 24개의 균등한 파티션으로 재배열하는 과정입니다.
+
+---
+
+### 5. 저장 포맷의 진화: Parquet (Columnar Storage)
+
+DataFrame을 최종 저장할 때 왜 Parquet을 쓰는지에 대한 이유입니다.
+
+* **컬럼 기반 저장:** CSV처럼 줄 단위로 읽지 않고, 필요한 컬럼만 선택해서 읽을 수 있습니다(Column Pruning).
+* **데이터 타입 보존:** CSV는 모든 데이터가 텍스트이지만, Parquet은 스키마 정보를 포함하고 있어 읽어올 때 타입을 다시 지정할 필요가 없습니다.
+* **압축 효율:** 유사한 데이터가 모여있는 컬럼 단위로 압축하므로 CSV 대비 용량이 획기적으로 줄어듭니다.
+
+---
+
+### 📝 요약: DataFrame 작업의 핵심 흐름
+
+1. **Schema 정의:** 읽기 속도 최적화.
+2. **Transformations:** `select`, `filter`, `withColumn` 등으로 논리적 계획 수립.
+3. **Repartition:** 병렬 처리 효율 극대화.
+4. **Action:** `show()` 또는 `write.parquet()`로 연산 실행 및 결과 확인.
+
