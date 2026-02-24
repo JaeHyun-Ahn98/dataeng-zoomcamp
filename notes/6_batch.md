@@ -415,3 +415,134 @@ DataFrame을 최종 저장할 때 왜 Parquet을 쓰는지에 대한 이유입�
 3. **Repartition:** 병렬 처리 효율 극대화.
 4. **Action:** `show()` 또는 `write.parquet()`로 연산 실행 및 결과 확인.
 
+
+---
+
+## 9. 🏗️ Spark 실전: 스키마 설계 및 대규모 데이터 통합 (5.3.3)
+
+이 섹션에서는 `05_taxi_schema.ipynb` 파일의 핵심 로직을 통해 **데이터 정제(Cleaning)** 과정을 살펴봅니다.
+
+### 1) 엄격한 설계도 작성을 통한 데이터 정합성 확보
+
+Spark가 데이터를 읽기 전에 우리가 먼저 컬럼명과 타입을 확정 짓습니다.
+
+```python
+# [05 노트북 코드] 명시적 스키마 정의 예시 (Green Taxi)
+from pyspark.sql import types
+
+green_schema = types.StructType([
+    types.StructField("VendorID", types.LongType(), True),
+    types.StructField("lpep_pickup_datetime", types.TimestampType(), True),
+    types.StructField("lpep_dropoff_datetime", types.TimestampType(), True),
+    types.StructField("PULocationID", types.LongType(), True),
+    types.StructField("DOLocationID", types.LongType(), True),
+    types.StructField("passenger_count", types.DoubleType(), True),
+    types.StructField("trip_distance", types.DoubleType(), True),
+    # ... (생략) ...
+])
+
+```
+
+* **왜 했는가?**: `VendorID`나 `PULocationID`처럼 나중에 JOIN의 키가 될 데이터들이 월별로 타입이 다르게 읽히는 것을 방지합니다.
+
+### 2) 루프를 이용한 대규모 ETL 자동화
+
+수십 개의 폴더에 흩어진 CSV 파일을 한 번에 Parquet으로 변환하는 자동화 로직입니다.
+
+```python
+# [05 노트북 코드] 반복문을 통한 월별 데이터 변환
+years = [2020, 2021]
+
+for color, schema in taxi_configs:
+    for year in years:
+        for month in range(1, 13):
+            input_path = f'data/raw/{color}/{year}/{month:02d}/*.parquet'
+            output_path = f'data/pq/{color}/{year}/{month:02d}/'
+
+            # 1. 정의한 스키마로 읽기
+            df = spark.read.schema(schema).parquet(input_path)
+
+            # 2. 4개의 파티션으로 나누어 병렬 저장 최적화
+            df.repartition(4).write.mode('overwrite').parquet(output_path)
+
+```
+
+* **핵심 과정**: 읽기(read) → 재분할(repartition) → 쓰기(write) 순서로 진행됩니다. 이 과정을 거치면 원본 대비 용량이 줄고 읽기 속도가 수십 배 빨라진 `data/pq` 폴더가 생성됩니다.
+
+---
+
+## 10. 📊 Spark SQL: 데이터 결합 및 비즈니스 리포트 생성 (5.3.4)
+
+이 섹션에서는 `06_spark_sql.ipynb` 코드를 통해 **데이터 분석 및 요약** 과정을 살펴봅니다.
+
+### 1) 다른 두 세상의 데이터 합치기 (Union)
+
+Green 택시와 Yellow 택시는 컬럼명이 다릅니다. 이를 공통 분모로 묶어주는 작업입니다.
+
+```python
+# [06 노트북 코드] 컬럼명 표준화 및 Union
+# Green 데이터 컬럼명 변경 (lpep -> pickup/dropoff)
+df_green = df_green \
+    .withColumnRenamed('lpep_pickup_datetime', 'pickup_datetime') \
+    .withColumnRenamed('lpep_dropoff_datetime', 'dropoff_datetime')
+
+# Yellow 데이터 컬럼명 변경 (tpep -> pickup/dropoff)
+df_yellow = df_yellow \
+    .withColumnRenamed('tpep_pickup_datetime', 'pickup_datetime') \
+    .withColumnRenamed('tpep_dropoff_datetime', 'dropoff_datetime')
+
+# 두 데이터셋 합치기
+df_trips_data = df_green.select(common_columns).unionAll(df_yellow.select(common_columns))
+
+```
+
+### 2) Spark SQL을 활용한 복합 집계 (Aggregation)
+
+합쳐진 전체 데이터를 바탕으로 월별, 구역별 수익 리포트를 만듭니다.
+
+```python
+# [06 노트북 코드] 임시 뷰 생성 및 SQL 쿼리 실행
+df_trips_data.createOrReplaceTempView('trips_data')
+
+df_result = spark.sql("""
+SELECT 
+    -- 1. 시간 및 구역 기준
+    date_trunc('month', pickup_datetime) AS revenue_month, 
+    PULocationID AS zone,
+    
+    -- 2. 수익 관련 통계
+    SUM(total_amount) AS revenue_monthly_total,
+    COUNT(1) AS number_records,
+    AVG(passenger_count) AS avg_passenger_count,
+    AVG(trip_distance) AS avg_trip_distance
+FROM 
+    trips_data
+GROUP BY 
+    1, 2
+""")
+
+```
+
+### 3) 최종 리포트 파일 최적화 저장
+
+분석 결과물은 용량이 작으므로 관리하기 편하게 파일을 하나로 뭉쳐서 저장합니다.
+
+```python
+# [06 노트북 코드] 결과 저장 (파일 1개로 합치기)
+df_result.coalesce(1) \
+    .write.parquet('data/report/revenue/', mode='overwrite')
+
+```
+
+* **`coalesce(1)`**: 분석 결과 리포트는 보통 작기 때문에 파일이 여러 개로 쪼개져 있으면 오히려 읽기 불편합니다. 이를 하나의 파일로 모아주는 작업입니다.
+* **`mode('overwrite')`**: 매달 배치가 돌 때마다 새로운 결과로 덮어씌워 최신 리포트를 유지합니다.
+
+---
+
+### ✨ 요약된 코드 흐름도
+
+1. **`StructType`**: 원본 데이터의 불확실성을 제거 (설계도)
+2. **`repartition(4)`**: 분산 처리를 위한 일감 배분 (도시락 쪼개기)
+3. **`unionAll`**: 서로 다른 출처의 데이터를 하나로 결합 (통합)
+4. **`spark.sql`**: 비즈니스 로직 적용 및 인사이트 추출 (요리)
+5. **`coalesce(1)`**: 최종 결과물을 보기 좋게 정리 (포장)
