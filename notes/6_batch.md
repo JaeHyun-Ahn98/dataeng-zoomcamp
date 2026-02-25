@@ -546,3 +546,335 @@ df_result.coalesce(1) \
 3. **`unionAll`**: 서로 다른 출처의 데이터를 하나로 결합 (통합)
 4. **`spark.sql`**: 비즈니스 로직 적용 및 인사이트 추출 (요리)
 5. **`coalesce(1)`**: 최종 결과물을 보기 좋게 정리 (포장)
+강의 **5.4.1 - Anatomy of a Spark Cluster**의 내용을 핵심 위주로 빠짐없이 정리했다.
+
+---
+
+## 11. 🧠 Spark Internals: Spark 클러스터의 구조 (Anatomy)
+
+Spark가 단순히 코드를 실행하는 것이 아니라, 내부적으로 어떤 컴포넌트들이 어떻게 상호작용하여 분산 처리를 수행하는지 파악한다.
+
+### 1) 클러스터 구성 요소 (Core Components)
+
+Spark 클러스터는 크게 세 가지 핵심 요소로 구성된다.
+
+* **Driver:**
+* 사용자가 작성한 코드가 실행되는 곳이다.
+* 전체적인 작업의 흐름을 제어하고, 작업을 **Task** 단위로 쪼개어 Executor에게 전달한다.
+* Spark 세션(SparkSession)이 생성되는 지점이다.
+
+
+* **Executor:**
+* 실제로 연산(Task)을 수행하는 '일꾼' 프로세스다.
+* 데이터를 메모리나 디스크에 저장하고 처리 결과를 Driver에게 보고한다.
+
+
+* **Cluster Manager:**
+* 클러스터의 리소스(CPU, 메모리)를 관리하고 Executor를 할당한다.
+* 종류: Spark Standalone, YARN, Kubernetes(K8s), Mesos 등.
+
+
+
+### 2) 통신 및 데이터 흐름 (Communication)
+
+1. **Driver ↔ Cluster Manager:** Driver가 리소스를 요청하면 Cluster Manager가 Executor들을 띄워준다.
+2. **Driver ↔ Executor:** Driver는 실행 계획을 세워 Task를 Executor에 배포하고, Executor는 실행 상태와 결과를 Driver에 보낸다.
+3. **Executor ↔ Executor:** 셔플(Shuffle)이 발생할 때 일꾼들끼리 직접 데이터를 주고받는다.
+
+---
+
+### 3) 코드 실행의 내부 단계 (Execution Hierarchy)
+
+작성한 코드는 Spark 내부에서 다음과 같은 계층으로 쪼개져 실행된다.
+
+* **Job:** `show()`, `write()`, `collect()` 같은 **Action**을 호출할 때 생성되는 최상위 단위다.
+* **Stage:** Job 내에서 **Shuffle**이 발생하는 지점을 기준으로 나뉜다. 셔플이 없으면 하나의 Stage로 처리되지만, 데이터 재배치가 필요하면 여러 Stage로 분리된다.
+* **Task:** 가장 작은 실행 단위다. 하나의 Stage 내에서 **데이터 파티션 한 개**를 처리하는 실제 작업이다. 파티션이 100개면 Task도 100개가 생성된다.
+
+---
+
+### 4) 실전 적용: `06_spark_sql.ipynb`에서의 구조 이해
+
+내가 작성한 노트북 코드가 내부적으로 어떻게 돌아가는지 연결한다.
+
+```python
+# [06_spark_sql.ipynb] 
+# 이 코드를 실행하는 순간 Driver는 전체 계획을 세운다.
+df_result = spark.read.parquet('data/pq/*/*') \
+    .repartition(24) \
+    .groupBy('zone') \
+    .count()
+
+# Action 호출: 이 때 실제 Job이 생성되어 Executor로 Task가 전달된다.
+df_result.show()
+
+```
+
+* **Driver 역할:** `repartition(24)`와 `groupBy`를 보고 "셔플이 필요하니 Stage를 나눠야겠군"이라고 판단한다.
+* **Executor 역할:** 각자 맡은 파티션(24개 중 일부)을 가져와서 로컬 카운트를 하고, 셔플 단계에서 다른 Executor와 데이터를 주고받아 최종 결과를 만든다.
+* **4040 포트(Spark UI):** 이 화면에서 보이는 **Job -> Stage -> Task** 리스트가 바로 위에서 설명한 Anatomy의 시각화 결과물이다.
+
+---
+
+### ✨ 핵심 요약 및 복습 포인트
+
+1. **Driver**는 팀장, **Executor**는 일꾼, **Cluster Manager**는 인사팀이다.
+2. **Shuffle**은 Stage를 가르는 기준이며, 네트워크 비용이 가장 크다.
+3. **Task 수 = 파티션 수** 이므로, 적절한 파티셔닝이 성능의 핵심이다.
+4. Local 모드(`local[*]`)에서는 내 컴퓨터 한 대가 Driver와 Executor 역할을 모두 수행하는 특수한 케이스다.
+
+
+---
+
+## 12. ⚙️ Spark Internals: GroupBy 및 Join 실전 (강의 5.4.1 ~ 5.4.2)
+
+이 과정은 흩어져 있는 원본 데이터를 분석 가능한 형태의 **'수익 통계 리포트'**로 변환하는 파이프라인이다.
+
+### 1) 개별 데이터 집계 (GroupBy & Aggregation)
+
+가장 먼저 Green 택시와 Yellow 택시의 방대한 원본 데이터를 시간(hour)과 구역(zone) 단위로 요약한다. 이 과정에서 각 일꾼(Executor)들 사이에 데이터를 재배치하는 **셔플(Shuffle)**이 발생한다.
+
+```python
+# [07_groupby_join.ipynb] Green 택시 데이터 요약
+df_green_revenue = spark.sql("""
+SELECT 
+    date_trunc('hour', lpep_pickup_datetime) AS hour, 
+    PULocationID AS zone,
+    SUM(total_amount) AS amount,
+    COUNT(1) AS number_records
+FROM
+    green
+WHERE
+    lpep_pickup_datetime >= '2020-01-01 00:00:00'
+GROUP BY
+    1, 2
+""")
+
+# 최적화를 위해 20개의 파티션으로 나누어 저장 (데이터 재배열)
+df_green_revenue \
+    .repartition(20) \
+    .write.parquet('data/report/revenue/green', mode='overwrite')
+
+```
+
+* **동작 원리**: 모든 행을 다 전송하지 않고, 각 파티션에서 먼저 계산한 뒤 결과값만 모으는 방식으로 네트워크 비용을 절감한다.
+
+---
+
+### 2) 두 거대 데이터의 결합 (Outer Join)
+
+요약된 Green 택시 데이터와 Yellow 택시 데이터를 하나로 합친다. 특정 시간대와 구역에 두 택시 중 하나만 운행했을 수도 있으므로 `outer` join을 사용하여 데이터를 누락 없이 통합한다.
+
+```python
+# [07_groupby_join.ipynb] 통합을 위한 컬럼명 변경 및 Join
+df_green_revenue_tmp = df_green_revenue \
+    .withColumnRenamed('amount', 'green_amount') \
+    .withColumnRenamed('number_records', 'green_number_records')
+
+df_yellow_revenue_tmp = df_yellow_revenue \
+    .withColumnRenamed('amount', 'yellow_amount') \
+    .withColumnRenamed('number_records', 'yellow_number_records')
+
+# 'hour'와 'zone'을 키로 사용하여 결합
+df_join = df_green_revenue_tmp.join(df_yellow_revenue_tmp, on=['hour', 'zone'], how='outer')
+
+```
+
+---
+
+### 3) 차원 데이터 결합 및 최종 리포트 생성 (Dimension Join)
+
+숫자로만 구성된 요약 데이터에 실제 구역 이름(Manhattan, Brooklyn 등)을 붙여 사용자가 읽기 쉬운 리포트로 완성하는 단계다.
+
+```python
+# [07_groupby_join.ipynb] 지명(Zones) 데이터와 결합
+df_zones = spark.read.parquet('zones/') 
+df_result = df_join.join(df_zones, df_join.zone == df_zones.LocationID)
+
+# 분석에 불필요한 ID 컬럼들은 삭제 후 최종 저장
+df_result.drop('LocationID', 'zone').write.parquet('tmp/revenue-zones')
+
+```
+
+---
+
+### ✨ 요약: 07 노트북의 데이터 파이프라인 흐름
+
+1. **Partial Aggregation**: 수백만 건의 로우 데이터를 시간/구역별 요약본으로 압축한다.
+2. **Shuffle & Write**: 압축된 데이터를 20개의 균등한 파티션(`repartition`)으로 나누어 디스크에 기록한다.
+3. **Outer Join**: 서로 다른 두 데이터셋(Green, Yellow)을 시간과 구역을 기준으로 통합한다.
+4. **Final Join**: 숫자로 된 구역 ID를 실제 지명으로 치환하여 최종 리포트를 추출한다.
+
+이 모든 과정은 **Driver(팀장)**가 세운 계획에 따라 **Executor(일꾼)**들이 데이터를 셔플하며 수행하는 복합적인 분산 처리의 결과물이다. 🚀🐻
+
+
+---
+
+## 13. 🏗️ Spark 실전 프로젝트: 원본 데이터에서 최종 리포트까지 (Notebook 03~07)
+
+이 과정은 단순한 코드 연습이 아니라, **"날것의 CSV 데이터를 읽어(Extract), Spark에 맞게 가공하고(Transform), 분석용 리포트로 저장(Load)"**하는 전체 데이터 엔지니어링 과정을 담고 있습니다.
+
+### 1단계: [03_test & 04_pyspark] 환경 검증 및 Spark 입문
+
+본격적인 분석에 앞서, 내 컴퓨터의 Spark가 데이터를 다룰 준비가 되었는지 확인하고 기초 사용법을 익히는 단계입니다.
+
+* **핵심 작업**: `taxi_zone_lookup.csv`라는 작은 파일을 읽어 Spark 전용 포맷인 **Parquet**으로 변환 저장합니다.
+* **시행착오 포인트**: 강의의 옛날 링크(`s3...`) 대신 최신 링크(`d37ci...`)를 사용하여 데이터를 받아야 `PATH_NOT_FOUND` 에러를 피할 수 있습니다.
+
+```python
+# [04번 노트북 핵심]
+# CSV 읽기 (Pandas와 비슷하지만 '분산'해서 읽음)
+df = spark.read.option("header", "true").csv('taxi_zone_lookup.csv')
+
+# 파티셔닝 후 Parquet 저장 (일꾼들에게 일감 배분)
+df.repartition(4).write.parquet('zones', mode='overwrite')
+
+```
+
+---
+
+### 2단계: [05_taxi_schema] 데이터 정제 및 대량 변환 (ETL의 정수)
+
+수백 메가바이트의 월별 택시 데이터(Green, Yellow)를 처리하기 위해 **'설계도(Schema)'**를 입히는 아주 중요한 단계입니다.
+
+* **핵심 작업**: Spark가 데이터 타입을 추측하게 두지 않고, 우리가 직접 `StructType`으로 타입을 고정합니다. 그래야 나중에 데이터가 섞여도 에러가 나지 않습니다.
+* **자동화**: 반복문을 통해 2020년~2021년의 모든 월별 데이터를 일관된 형식의 Parquet으로 변환합니다.
+
+```python
+# [05번 노트북 핵심] 스키마 정의
+schema = types.StructType([
+    types.StructField('PULocationID', types.IntegerType(), True),
+    types.StructField('pickup_datetime', types.TimestampType(), True),
+    # ... 중략 ...
+])
+
+# 대량 변환 루프 (repartition으로 저장 성능 최적화)
+df.repartition(4).write.parquet(output_path)
+
+```
+
+---
+
+### 3단계: [06_spark_sql] 데이터 통합 및 첫 번째 리포트
+
+서로 다른 두 종류의 택시(Green, Yellow) 데이터를 하나로 합치고, SQL 문법을 사용하여 수익 리포트를 뽑아내는 단계입니다.
+
+* **핵심 작업**: 컬럼명이 다른 두 데이터를 `withColumnRenamed`로 맞춘 뒤 `unionAll`로 합칩니다.
+* **분석**: `createOrReplaceTempView`를 통해 데이터를 테이블처럼 만들고, 익숙한 SQL로 월별/구역별 수익을 계산합니다.
+
+```python
+# [06번 노트북 핵심] SQL 분석
+df_trips_data.createOrReplaceTempView('trips_data')
+
+df_result = spark.sql("""
+    SELECT date_trunc('month', pickup_datetime) AS month, PULocationID AS zone, SUM(total_amount) AS revenue
+    FROM trips_data GROUP BY 1, 2
+""")
+# 결과는 파일 1개로 깔끔하게 포장
+df_result.coalesce(1).write.parquet('data/report/revenue/', mode='overwrite')
+
+```
+
+---
+
+### 4단계: [07_groupby_join] 대규모 집계와 데이터 결합 (Advanced)
+
+데이터 엔지니어링의 꽃인 **Join**과 **Shuffle**을 깊이 있게 다루는 마지막 단계입니다.
+
+* **핵심 작업**:
+1. 각 택시 데이터별로 시간대별 수익을 먼저 구합니다 (**GroupBy**).
+2. 두 택시의 결과를 하나로 합칩니다 (**Outer Join**).
+3. 마지막으로 'LocationID'만 있던 결과에 실제 지명(`zones`)을 붙입니다 (**Dimension Join**).
+
+
+
+```python
+# [07번 노트북 핵심] Join 연산
+# 1단계에서 만든 zones 데이터와 결합
+df_zones = spark.read.parquet('zones/')
+df_final_report = df_join.join(df_zones, df_join.zone == df_zones.LocationID)
+
+```
+
+---
+
+### 🧠 전체 과정 흐름도 요약 (사용자님을 위한 정리)
+
+1. **데이터 수집 (!wget)**: 원본 CSV 파일을 내 컴퓨터로 가져옵니다.
+2. **검증 및 기초 (03/04)**: 환경을 체크하고 작은 파일을 Parquet으로 바꿔 저장하는 연습을 합니다.
+3. **설계도 작성 (05)**: 대용량 데이터를 위해 `StructType`으로 타입을 엄격하게 정의합니다.
+4. **최적화 저장 (05)**: 원본 CSV를 일꾼들이 읽기 편한 `repartition(4)` 된 Parquet 파일들로 변환합니다.
+5. **데이터 통합 (06)**: 서로 다른 출처의 데이터를 하나로 합칩니다 (Union).
+6. **비즈니스 로직 (07)**: SQL과 Join을 사용하여 구역별/시간별 최종 수익 리포트를 생성합니다.
+
+---
+
+### 💡 마지막 팁: 왜 이렇게 복잡하게 하나요?
+
+그냥 SQL 하나로 할 수도 있겠지만, **Spark Internals(5.4.1~5.4.2)**에서 배웠듯이 이 과정은 **"일꾼(Executor)들이 가장 빠르고 안정적으로 일을 할 수 있는 환경"**을 만들어가는 과정입니다.
+
+* **Parquet**을 써서 읽기 속도를 높이고,
+* **Schema**를 써서 타입을 고정하며,
+* **Repartition**을 써서 일감을 골고루 나눠주고,
+* **Join**을 통해 흩어진 정보를 하나로 모으는 것.
+
+
+---
+
+## 14. ⚡ Spark를 사용하는 결정적인 이유 (vs dbt/SQL)
+
+가장 큰 차이는 **"데이터가 어디에서 계산되는가?"**입니다.
+
+### ① 데이터가 데이터 웨어하우스(DW) 밖에 있을 때
+
+dbt는 BigQuery나 Snowflake 같은 DW **내부**에 있는 데이터를 요리하는 도구입니다. 하지만 현업에서는 DW에 들어가기 전의 '날것(Raw)' 데이터가 S3나 GCS 같은 **데이터 레이크**에 수 테라바이트씩 쌓여 있는 경우가 많습니다.
+
+* **Spark:** DW에 넣기엔 너무 크고 지저분한 데이터를 미리 정제(ETL)하여 DW로 넘겨주는 역할을 합니다.
+
+### ② 복잡한 비정형 데이터 처리
+
+SQL은 표(Table) 형태 데이터에는 강하지만, 복잡한 JSON, 이미지, 로그 파일, 또는 머신러닝 알고리즘을 적용하기엔 한계가 있습니다.
+
+* **Spark:** Python이나 Scala 코드를 자유롭게 쓸 수 있어, SQL만으로는 구현하기 힘든 복잡한 로직을 처리할 수 있습니다.
+
+### ③ 실시간 처리 (Streaming)
+
+배치(Batch) 처리 외에 데이터가 들어오는 즉시 처리해야 하는 실시간 대시보드나 이상 감지 시스템이 필요할 때, Spark Streaming(Structured Streaming)은 업계 표준입니다.
+
+---
+
+## 2. 현업에서 Spark 대신 사용하는 것들
+
+Spark가 '대세'이긴 하지만, 회사의 규모나 데이터의 성격에 따라 다른 도구를 선택하기도 합니다.
+
+### ① Trino (구 Presto)
+
+* **특징:** 데이터 레이크(S3 등)에 있는 데이터를 저장소를 옮기지 않고 바로 SQL로 조회할 때 씁니다.
+* **차이점:** Spark는 "데이터를 변환하고 저장(ETL)"하는 데 강점이 있고, Trino는 "여러 곳에 흩어진 데이터를 빠르게 조회(Ad-hoc Query)"하는 데 특화되어 있습니다.
+
+### ② Flink
+
+* **특징:** Spark보다 더 '진짜 실시간'에 가까운 처리를 할 때 사용합니다.
+* **차이점:** Spark는 실시간 처리를 아주 작은 배치 단위(Micro-batch)로 쪼개서 하지만, Flink는 데이터 한 건 한 건을 즉시 처리합니다. 지연 시간(Latency)이 극도로 중요한 금융권 등에서 선호합니다.
+
+### ③ 현대적 데이터 웨어하우스 (BigQuery, Snowflake, Databricks)
+
+* **특징:** 요즘은 DW 성능이 워낙 좋아져서, 웬만한 양의 데이터는 Spark 없이 SQL만으로 처리합니다. (ELT 방식)
+* **Databricks:** 재미있게도 Databricks는 Spark를 만든 사람들이 세운 회사입니다. 결국 현업에서는 '생 Spark'를 관리하기 힘들어서 이런 유료 클라우드 서비스를 사용합니다.
+
+### ④ Pandas / Polars (작은 규모)
+
+* 데이터가 한 대의 컴퓨터 메모리에 들어갈 정도(수십 GB 이하)라면, 굳이 복잡한 Spark 클러스터를 띄우지 않고 **Polars** 같은 고성능 라이브러리를 사용해 비용을 아낍니다.
+
+---
+
+## 3. 요약: 공부의 방향성
+
+1. **Docker/Terraform:** 데이터 인프라를 구축하는 '바구니'를 만듭니다.
+2. **Airflow:** 이 모든 작업이 제시간에 돌아가게 '스케줄링'합니다.
+3. **Spark:** 데이터 레이크의 거대한 원본 데이터를 '1차 가공'합니다.
+4. **dbt:** 가공된 데이터를 DW에 넣고 '비즈니스 로직(SQL)'을 입힙니다.
+
+[Image comparing Batch Processing versus Stream Processing architectures]
+
+**결론:** Spark는 **"SQL만으로는 감당 안 되는 대규모/비정형 데이터를 다루는 법"**을 배우는 과정이다. 현업에서는 Spark를 직접 설치하기보다 AWS EMR이나 Databricks 같은 서비스로 많이 사용한다.
