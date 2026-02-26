@@ -878,3 +878,199 @@ Spark가 '대세'이긴 하지만, 회사의 규모나 데이터의 성격에 �
 [Image comparing Batch Processing versus Stream Processing architectures]
 
 **결론:** Spark는 **"SQL만으로는 감당 안 되는 대규모/비정형 데이터를 다루는 법"**을 배우는 과정이다. 현업에서는 Spark를 직접 설치하기보다 AWS EMR이나 Databricks 같은 서비스로 많이 사용한다.
+
+데이터 엔지니어링 실습하시느라 고생 많으셨습니다! DE Zoomcamp 5.6.1 영상 내용을 바탕으로, **Google Cloud SDK 설정부터 PySpark GCS 연결**까지의 전체 과정을 흐름에 따라 깔끔하게 정리해 드릴게요.
+
+---
+
+## 15. 🏗️ 실습 요약: Spark와 GCS(Google Cloud Storage) 연결하기
+
+본 실습은 로컬 환경의 Spark가 클라우드 저장소인 GCS에 있는 데이터를 읽고 쓸 수 있도록 인증 및 커넥터를 설정하는 과정입니다.
+
+---
+
+### 1. Google Cloud 환경 설정 (PowerShell)
+
+가장 먼저 로컬 컴퓨터가 구글 클라우드와 대화할 수 있도록 SDK를 설치하고 인증을 진행했습니다.
+
+* **Google Cloud SDK 설치 및 인증**: `gcloud init` 명령어를 통해 구글 계정을 로그인하고 프로젝트를 설정했습니다.
+* **로컬 데이터를 GCS로 업로드**: `gsutil`의 멀티스레드 옵션(`-m`)을 사용하여 로컬의 Parquet 파일들을 버킷으로 전송했습니다.
+```powershell
+# 로컬의 pq/ 폴더를 GCS 버킷의 pq/ 경로로 복사
+gsutil -m cp -r pq/ gs://spark-gcs-example/pq
+
+```
+
+
+
+---
+
+### 2. GCS 커넥터 준비
+
+Spark는 기본적으로 GCS 파일 시스템을 이해하지 못하므로, 중간에서 다리 역할을 해줄 **JAR 파일**이 필요합니다.
+
+* **커넥터 다운로드**: `gsutil cp` 명령어를 사용하여 구글에서 제공하는 공식 커넥터 파일을 다운로드했습니다.
+```powershell
+# GCS 커넥터 JAR 파일 다운로드
+gsutil cp gs://hadoop-lib/gcs/gcs-connector-hadoop3-2.2.5.jar gcs-connector-hadoop3-2.2.5.jar
+
+```
+
+
+
+---
+
+### 3. PySpark 노트북 설정 (Jupyter Notebook)
+
+이제 파이썬 코드에서 Spark 세션을 생성할 때, 앞서 준비한 설정값들을 주입합니다.
+
+#### ① 윈도우 환경 변수 설정
+
+윈도우 환경에서 Spark가 정상 작동하도록 `HADOOP_HOME`과 `PATH`를 잡아줍니다.
+
+```python
+import os
+import sys
+
+os.environ['HADOOP_HOME'] = 'C:/tools/hadoop-3.2.0'
+os.environ['PATH'] += os.pathsep + 'C:/tools/hadoop-3.2.0/bin'
+
+```
+
+#### ② SparkConf 설정 (인증 및 커넥터 경로)
+
+GCS 버킷에 접근하기 위한 **서비스 계정 키(JSON)** 경로와 **JAR 커넥터** 위치를 명시합니다.
+
+```python
+credentials_location = 'C:/key/kestra-sandbox-485208-6ee885732b2a.json'
+
+conf = SparkConf() \
+    .setMaster('local[*]') \
+    .setAppName('test') \
+    .set("spark.jars", "./lib/gcs-connector-hadoop3-2.2.5.jar") \
+    .set("spark.hadoop.google.cloud.auth.service.account.enable", "true") \
+    .set("spark.hadoop.google.cloud.auth.service.account.json.keyfile", credentials_location)
+
+```
+
+#### ③ Hadoop Configuration 주입
+
+SparkContext를 통해 GCS 파일 시스템 구현체(`gs://`)를 정의합니다.
+
+```python
+sc = SparkContext(conf=conf)
+hadoop_conf = sc._jsc.hadoopConfiguration()
+
+hadoop_conf.set("fs.AbstractFileSystem.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS")
+hadoop_conf.set("fs.gs.impl", "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem")
+hadoop_conf.set("fs.gs.auth.service.account.json.keyfile", credentials_location)
+hadoop_conf.set("fs.gs.auth.service.account.enable", "true")
+
+```
+
+---
+
+### 4. 결과 확인: GCS 데이터 로드
+
+모든 설정이 완료되면 로컬 경로가 아닌 `gs://` 주소를 사용하여 데이터를 직접 읽어올 수 있습니다.
+
+```python
+# GCS 버킷에서 Parquet 데이터 읽기
+df_green = spark.read.parquet('gs://spark-gcs-example/pq/green/*/*')
+
+# 데이터 개수 확인 (성공 시 2,802,931 출력)
+df_green.count()
+
+```
+
+---
+
+### 💡 실습 포인트
+
+1. **커넥터(JAR)**: Spark가 GCS라는 "외계 언어"를 해석할 수 있게 해주는 통역사입니다.
+2. **서비스 계정(JSON)**: 클라우드에 입장할 수 있는 "출입증"입니다.
+3. **Winutils**: 윈도우가 리눅스인 척하게 해주는 "가면" 같은 역할을 합니다.
+
+네, 요청하신 대로 **Jupyter Notebook 실험부터 Python 스크립트 변환, 그리고 로컬 스파크 클러스터(spark-submit) 실행**까지의 전 과정을 하나로 합쳐서 완벽하게 정리해 드립니다.
+
+이 내용은 나중에 복습하실 때나 실무에서 환경을 세팅할 때 가이드북으로 쓰시면 좋습니다.
+
+---
+
+# 16. 📑 로컬 스파크 클러스터 구축 및 데이터 파이프라인 실행 가이드
+
+**학습 범위**: DE Zoomcamp 5.6.2 - Creating a Local Spark Cluster
+
+## 1. 환경 준비 및 버전 정렬 (Alignment)
+
+스파크는 자바, 파이썬, 스파크 자체 버전이 서로 맞지 않으면 에러가 자주 발생합니다. 이를 위해 **독립된 환경**을 먼저 구축했습니다.
+
+* **가상환경 생성**: `python -m venv spark_env` (Python 3.10.11 사용)
+* **핵심 설정**: `PYSPARK_PYTHON=python` 설정을 통해 스파크 워커들이 사용할 파이썬 경로를 일치시킴.
+* **버전 조합**: Python 3.10 + Spark 3.3.2 + JDK 11 (가장 안정적인 조합).
+
+## 2. 개발 흐름: Jupyter(.ipynb)에서 Python(.py)으로
+
+실험적인 코드를 운영 가능한 스크립트로 변환하는 과정이 핵심입니다.
+
+### ① Jupyter Notebook 단계 (`06_spark_sql.ipynb`)
+
+* **용도**: 데이터 로드 확인, SQL 쿼리 테스트, 결과값 샘플 확인.
+* **특징**: `SparkSession` 생성 시 마스터 주소를 직접 입력(`.master("spark://...")`)하여 로컬에서 즉시 테스트.
+
+### ② Python 스크립트 변환 단계 (`06_spark_sql.py`)
+
+* **변환**: 노트북의 셀들을 모아 하나의 파이썬 파일로 추출.
+* **유연성 추가 (argparse)**: 하드코딩된 데이터 경로를 지우고, 실행 시 인자를 받을 수 있게 수정.
+```python
+parser.add_argument('--input_green', required=True)
+parser.add_argument('--input_yellow', required=True)
+parser.add_argument('--output', required=True)
+
+```
+
+
+* **마스터 주소 제거**: `spark-submit` 시 외부에서 주소를 주입받을 수 있도록 코드 내 `.master()` 설정 삭제.
+
+## 3. 로컬 스파크 클러스터 구동
+
+터미널을 여러 개 열어 실제 클러스터 환경을 흉내 냅니다.
+
+* **Master 기동**: `./bin/spark-class org.apache.spark.deploy.master.Master`
+* **Worker 기동**: `./bin/spark-class org.apache.spark.deploy.worker.Worker spark://[MASTER_IP]:7077`
+* **모니터링**: `localhost:8080` 웹 UI를 통해 워커의 상태(`ALIVE`)와 자원 할당량 확인.
+
+## 4. 최종 실행 (The Spark-Submit)
+
+가장 중요한 실무 표준 실행 방식입니다. 윈도우 Git Bash 환경에서의 트러블슈팅 경험을 포함합니다.
+
+### 🚀 실행 루틴 (Git Bash용)
+
+```bash
+# 1. 가상환경 활성화 (source 필수)
+source spark_env/Scripts/activate
+
+# 2. 파이썬 환경 변수 설정 (엔진에 위치 알림)
+export PYSPARK_PYTHON=python
+
+# 3. 윈도우용 .cmd 파일을 사용하여 Submit 실행
+/c/tools/spark-3.3.2-bin-hadoop3/bin/spark-submit.cmd \
+    --master "spark://192.168.55.228:7077" \
+    06_spark_sql.py \
+    --input_green=data/pq/green/2021/* \
+    --input_yellow=data/pq/yellow/2021/* \
+    --output=data/report/2021
+
+```
+
+## 5. 트러블슈팅 및 기억할 포인트 (중요!)
+
+사용자님이 강조하신 "기억해야 할 내용"들입니다.
+
+* **윈도우 경로 이슈**: Git Bash에서 `spark-submit`만 치면 리눅스용 쉘이 실행되어 `/bin/spark-class` 에러가 남. 반드시 **`.cmd` 확장자**를 포함한 전체 경로를 써줄 것.
+* **가상환경 우선순위**: 윈도우 환경 변수(Path)에 3.14가 있더라도, `source activate`를 통해 3.10 환경에 먼저 진입하면 안전하게 실행 가능.
+* **로그 해석**: `Job finished`와 `Write Job committed`가 뜨면 성공. 마지막에 뜨는 `Connection reset`은 종료 과정의 흔한 로그이므로 무시 가능.
+
+---
+
+**최종 결과**: `data/report/2021` 폴더 내에 분산 처리된 Parquet 결과 파일 생성 완료!
