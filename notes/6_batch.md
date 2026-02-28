@@ -1074,3 +1074,145 @@ export PYSPARK_PYTHON=python
 ---
 
 **최종 결과**: `data/report/2021` 폴더 내에 분산 처리된 Parquet 결과 파일 생성 완료!
+
+
+
+---
+
+## 17. 🛠️ Dataproc & Spark-BigQuery 전체 공정 및 트러블슈팅 리포트
+
+### 1. 인프라 구축: Dataproc 클러스터 생성
+
+가장 먼저 GCP 프로젝트(`kestra-sandbox-485208`) 내에 데이터 처리를 위한 연산 환경을 구축했습니다.
+
+* **생성 명령어 (성공 버전):**
+```bash
+gcloud dataproc clusters create de-zoomcamp-cluster \
+    --region asia-northeast3 \
+    --zone asia-northeast3-a \
+    --single-node \
+    --master-machine-type e2-standard-2 \
+    --master-boot-disk-size 50 \
+    --image-version 2.0-debian10 \
+    --optional-components JUPYTER,DOCKER \
+    --enable-component-gateway \
+    --project kestra-sandbox-485208
+
+```
+
+
+* **주요 포인트:** 비용 절감을 위해 `--single-node` 옵션을 사용했으며, 데이터 위치 최적화를 위해 서울 리전(`asia-northeast3`)을 선택했습니다.
+
+---
+
+### 2. IAM 권한 해결 (2026-02-27 기록)
+
+클러스터 생성 후 Job 제출 시 **Permission Error(권한 오류)**가 발생했었습니다.
+
+* **원인:** 사용 중인 계정에 Dataproc 작업을 관리할 수 있는 명시적 권한이 부족했습니다.
+* **해결:** GCP IAM 설정에서 해당 계정에 **`데이터 처리 관리자(Dataproc Administrator)`** 권한을 추가하여 문제를 해결했습니다.
+
+---
+
+### 3. BigQuery 연동을 위한 핵심 설정 (임시 버킷 & 리전)
+
+가장 까다로웠던 BigQuery 적재 설정 과정입니다.
+
+* **임시 버킷(`temporaryGcsBucket`)의 출처와 이유:**
+* **어디서 가져왔나:** Dataproc 클러스터를 생성하면 GCP가 내부적으로 작업용 임시 데이터를 저장하기 위해 버킷을 자동 생성합니다. 이를 확인하기 위해 Dataproc 클러스터 상세 페이지의 **'구성(Configuration)'** 탭에서 `Cloud Storage 스테이징 버킷` 항목에 있는 이름을 복사해왔습니다.
+* **왜 필요한가:** Spark-BigQuery 커넥터는 데이터를 BigQuery에 바로 꽂는 것이 아니라, 먼저 이 GCS 임시 버킷에 Parquet 형태로 데이터를 쓴 다음 BigQuery 로드 명령을 내리는 방식을 취하기 때문입니다.
+* **설정 값:** `dataproc-temp-asia-northeast3-35571412312-7fgtlzoo`
+
+
+* **리전(Region) 불일치 에러 대응:**
+* **문제:** 처음에 데이터가 적재되지 않았던 주요 원인 중 하나는 리전 불일치였습니다. Dataproc과 GCS 버킷은 서울(`asia-northeast3`)인데, BigQuery 데이터셋이 다른 리전(예: US)에 있으면 데이터를 옮길 수 없습니다.
+* **해결:** BigQuery 데이터셋(`trips_data_all`)을 만들 때 **데이터 위치(Location)**를 반드시 **`asia-northeast3`**로 지정해야만 정상적으로 통신이 가능했습니다.
+
+
+
+---
+
+### 4. 최종 PySpark 코드 (`06_spark_sql_big_query.py`)
+
+사용자님이 직접 작성하고 업로드한 최종 코드의 핵심 구조입니다.
+
+```python
+import argparse
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+
+# 실행 시 인자값(input_green, input_yellow, output)을 받기 위한 설정
+parser = argparse.ArgumentParser()
+parser.add_argument('--input_green', required=True)
+parser.add_argument('--input_yellow', required=True)
+parser.add_argument('--output', required=True)
+args = parser.parse_args()
+
+spark = SparkSession.builder.appName('test').getOrCreate()
+
+# [중요] BigQuery 적재를 위한 임시 GCS 버킷 경로 설정
+spark.conf.set('temporaryGcsBucket', 'dataproc-temp-asia-northeast3-35571412312-7fgtlzoo')
+
+# 데이터 로드 및 가공 (Green/Yellow Taxi 데이터 합치기)
+# ... 중략 ...
+df_trips_data.registerTempTable('trips_data')
+
+# SQL 쿼리로 매출 집계 결과 생성
+df_result = spark.sql("""
+SELECT 
+    PULocationID AS revenue_zone,
+    date_trunc('month', pickup_datetime) AS revenue_month, 
+    service_type, 
+    SUM(total_amount) AS revenue_monthly_total_amount,
+    AVG(passenger_count) AS avg_montly_passenger_count
+FROM trips_data
+GROUP BY 1, 2, 3
+""")
+
+# BigQuery에 최종 저장
+# output 변수에는 'trips_data_all.reports_2020' 형태의 문자열이 전달됨
+df_result.write.format('bigquery') \
+    .option('table', args.output) \
+    .save()
+
+```
+
+---
+
+### 5. 데이터 파이프라인 실행 (최종 명령어)
+
+로컬에서 수정한 코드를 GCS로 먼저 복사한 후, Dataproc에 작업을 제출했습니다.
+
+* **코드 업로드:**
+```bash
+gsutil cp 06_spark_sql_big_query.py gs://spark-gcs-example/code/06_spark_sql_big_query.py
+
+```
+
+
+* **작업 제출 (Job Submit):**
+```bash
+gcloud dataproc jobs submit pyspark \
+    --cluster=de-zoomcamp-cluster \
+    --region=asia-northeast3 \
+    --project=kestra-sandbox-485208 \
+    --jars=gs://spark-lib/bigquery/spark-bigquery-latest_2.12.jar \
+    gs://spark-gcs-example/code/06_spark_sql_big_query.py \
+    -- \
+    --input_green="gs://spark-gcs-example/pq/green/2020/*" \
+    --input_yellow="gs://spark-gcs-example/pq/yellow/2020/*" \
+    --output=trips_data_all.reports_2020
+
+```
+
+
+
+---
+
+### 6. 최종 요약 및 주의사항 (기억해야 할 것들)
+
+1. **프로젝트 ID:** `kestra-sandbox-485208`
+2. **데이터셋 명명 규칙:** 빅쿼리 테이블 이름에는 하이픈(`-`)을 쓸 수 없으므로 반드시 **`reports_2020`**(언더바) 형식을 유지해야 함.
+3. **Jar 파일:** BigQuery 연동을 위해 `gs://spark-lib/bigquery/spark-bigquery-latest_2.12.jar` 라이브러리를 반드시 포함해야 함.
+4. **로그 확인:** 작업 성공 여부는 로그에서 `>>>> 데이터 빅쿼리에 쓰기 시작한다!! <<<<` 문구가 출력되는지 확인하여 교차 검증함.
+
