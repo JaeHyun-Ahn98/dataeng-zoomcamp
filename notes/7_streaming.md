@@ -117,3 +117,146 @@
 
 ---
 
+축하드립니다! 산전수전 다 겪으며 드디어 **로컬 데이터 스트리밍 파이프라인(Kafka + Spark)**을 완벽하게 구축하셨네요.
+
+나중에 비슷한 문제가 생겼을 때나, 기술 면접에서 "환경 구축 경험"을 설명하실 수 있도록 오늘 해결한 과정을 핵심 위주로 정리해 드릴게요.
+
+---
+
+## 3. 🛠️ Data Engineering Zoomcamp: 스트리밍 환경 구축기
+
+### 1. 문제 상황 (Trouble)
+
+* 강사의 GitHub 폴더 구조를 로컬에 수동으로 복사하여 환경을 구축하려 함.
+* `docker-compose up` 실행 시 `jupyterlab`, `spark-master` 등의 이미지를 찾을 수 없어 **Pull Access Denied** 에러 발생.
+* 이미지 빌드 스크립트(`build.sh`)가 리눅스용 변수 설정으로 되어 있어 윈도우(Git Bash)에서 정상 작동하지 않음.
+
+### 2. 해결 과정 (Actions)
+
+#### **① 이미지 계층 구조 이해 및 수동 빌드**
+
+Docker 이미지들이 서로를 참조(`FROM`)하고 있어 순서대로 빌드해야 함을 파악했습니다.
+
+* `cluster-base` → `spark-base` → `spark-master`/`worker`/`jupyterlab` 순으로 빌드 진행.
+
+#### **② 환경 변수 주입 및 윈도우 호환성 해결**
+
+Git Bash에서 빌드 시, `--build-arg` 옵션을 통해 버전 정보를 직접 주입하여 빌드 에러를 방지했습니다.
+
+```bash
+docker build -t jupyterlab --build-arg spark_version=3.3.1 ...
+
+```
+
+#### **③ Python 보안 정책(PEP 668) 대응**
+
+최신 OS 베이스 이미지에서 `pip install`이 차단되는 문제를 Dockerfile 수정(`--break-system-packages`)을 통해 해결했습니다.
+
+#### **④ 멀티 컨테이너 네트워크 연결**
+
+Kafka 폴더와 Spark 폴더가 분리되어 있었지만, `docker-compose`의 `external: true` 설정을 통해 `kafka-spark-network`라는 공유 네트워크로 모든 서비스를 묶었습니다.
+
+### 3. 최종 인프라 구성 (Results)
+
+| 서비스 | 주소 | 역할 |
+| --- | --- | --- |
+| **Kafka Control Center** | `localhost:9021` | 데이터 스트림(Topic) 모니터링 |
+| **Spark Master UI** | `localhost:8080` | 데이터 처리 엔진 상태 및 워커 확인 |
+| **JupyterLab** | `localhost:8888` | PySpark 실습 코드 작성 및 실행 환경 |
+
+---
+
+### 📝 [Study Note] 핵심 교훈
+
+> "현업에서도 Docker 이미지는 단순히 `up` 하는 것이 아니라, 보안 정책이나 라이브러리 버전에 따라 직접 `Dockerfile`을 수정하고 빌드 인자를 관리하며 최적화하는 과정이 반드시 수반된다."
+
+---
+
+## 4. 🛠️ 실시간 데이터 송수신 및 Avro 스키마 적용기
+
+### 1. 데이터 설계도 작성 (Avro Schema 정의)
+
+데이터를 무작정 보내는 것이 아니라, **'약속된 형식'**에 맞추어 압축 전송하기 위해 Avro 설계도를 만들었습니다.
+
+* **Key 설계도 (`taxi_ride_key.avsc`)**: 어떤 필드를 기준으로 데이터를 식별할지 정의 (예: `vendor_id`)
+* **Value 설계도 (`taxi_ride_value.avsc`)**: 실제 택시 운행 정보의 타입 정의 (int, float 등)
+
+```json
+/* taxi_ride_value.avsc 예시 */
+{
+  "namespace": "com.datatalksclub.taxi",
+  "type": "record",
+  "name": "RideRecord",
+  "fields": [
+    { "name": "vendor_id", "type": "int" },
+    { "name": "passenger_count", "type": "int" },
+    { "name": "trip_distance", "type": "float" },
+    { "name": "payment_type", "type": "int" },
+    { "name": "total_amount", "type": "float" }
+  ]
+}
+
+```
+
+### 2. 데이터 발송기 구현 및 실행 (Producer)
+
+로컬의 CSV 데이터를 읽어서 카프카로 쏘아 올리는 역할을 합니다. 이때 **Schema Registry**와 통신하여 데이터를 이진법(Binary)으로 압축합니다.
+
+* **핵심 로직**: CSV 한 줄을 읽어 Avro 객체로 변환 후 `producer.produce()` 호출.
+* **결과**: 터미널에 `Record ... successfully produced` 메시지 출력 확인.
+
+```python
+# producer.py 핵심 코드 (요약)
+from confluent_kafka.avro import AvroProducer
+
+producer = AvroProducer(config, default_key_schema=key_schema, default_value_schema=value_schema)
+producer.produce(topic='rides_avro', key=key_dict, value=value_dict)
+
+```
+
+### 3. 데이터 수신기 구현 및 실행 (Consumer)
+
+카프카에 쌓인 이진 데이터를 다시 우리가 읽을 수 있는 파이썬 딕셔너리로 번역하여 출력합니다.
+
+* **핵심 로직**: `while True` 루프를 돌며 카프카를 폴링(`poll`)하고, 받은 데이터를 Deserializer로 복원.
+* **결과**: 콘솔에 `RideRecord: {'vendor_id': 1, 'total_amount': 12.35, ...}` 실시간 출력 성공!
+
+```python
+# consumer.py 핵심 코드 (요약)
+while True:
+    msg = consumer.poll(1.0)
+    if msg:
+        # 이진 데이터를 다시 텍스트(dict)로 번역
+        record = avro_value_deserializer(msg.value(), ...)
+        print(f"Received: {record}")
+
+```
+
+### 4. 네트워크 트러블슈팅: Docker 컨테이너 간 통신 해결
+
+Control Center 웹 화면에서 **"Schema Registry is not set up"** 에러가 발생하는 문제를 해결했습니다.
+
+* **원인**: 도커 컨테이너 내부에서는 서로를 `localhost`가 아닌 **서비스 이름**으로 불러야 함을 파악.
+* **해결**: `docker-compose.yml` 설정 수정.
+
+```yaml
+# docker-compose.yml 수정 내용
+control-center:
+  environment:
+    # 수정 전: http://localhost:8081
+    CONTROL_CENTER_SCHEMA_REGISTRY_URL: "http://schema-registry:8081" 
+
+```
+
+### 5. 최종 결과 (Summary)
+
+* **터미널**: Producer와 Consumer가 실시간으로 데이터를 주고받음.
+* **웹 UI (`localhost:9021`)**: `rides_avro` 토픽 내에 실제 데이터(Messages)와 설계도(Schema)가 정상적으로 표시됨.
+
+---
+
+### 📝 [Study Note] 핵심 교훈
+
+> "도커 환경에서 서비스 간 통신 시 `localhost`는 자기 자신만을 의미한다. **컨테이너 네트워크 내에서는 서비스 이름이 곧 주소**가 된다는 점을 명심하자. 또한, Avro를 사용하면 데이터 용량을 획기적으로 줄이면서도 데이터의 무결성(Type Check)을 보장할 수 있다."
+
+---
