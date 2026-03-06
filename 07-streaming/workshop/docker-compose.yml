@@ -1,0 +1,15 @@
+services:
+  redpanda:
+    image: redpandadata/redpanda:v25.3.9
+    command:
+      - redpanda
+      - start
+      - --smp 1                # 1개 CPU 코어 사용 (Seastar 프레임워크 기반 고성능용)
+      - --reserve-memory 0M      # 개발 환경용으로 추가 메모리 예약 해제 (오버헤드 방지)
+      - --overprovisioned        # 특정 CPU에 스레드 고정 안 함 (공유 환경 충돌 방지)
+      - --node-id 1            # 클러스터 내 브로커 고유 식별자 (필수값)
+      - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+    ports:
+      - 9092:9092    # 외부용 (내 노트북의 Python 프로듀서가 접속)
+      - 29092:29092  # 내부용 (도커 내부의 Flink 컨테이너가 접속)
