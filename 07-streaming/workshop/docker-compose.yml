@@ -13,3 +13,12 @@ services:
     ports:
       - 9092:9092    # 외부용 (내 노트북의 Python 프로듀서가 접속)
       - 29092:29092  # 내부용 (도커 내부의 Flink 컨테이너가 접속)
+  postgres:
+    image: postgres:15 # 안정적인 15버전 추천
+    container_name: postgres
+    environment:
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
