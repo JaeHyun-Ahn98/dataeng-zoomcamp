@@ -1,24 +1,84 @@
 services:
+  # 1. Redpanda: Kafka 호환 고성능 메시지 브로커 (데이터 우편함)
   redpanda:
     image: redpandadata/redpanda:v25.3.9
     command:
       - redpanda
       - start
-      - --smp 1                # 1개 CPU 코어 사용 (Seastar 프레임워크 기반 고성능용)
-      - --reserve-memory 0M      # 개발 환경용으로 추가 메모리 예약 해제 (오버헤드 방지)
-      - --overprovisioned        # 특정 CPU에 스레드 고정 안 함 (공유 환경 충돌 방지)
-      - --node-id 1            # 클러스터 내 브로커 고유 식별자 (필수값)
-      - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
-      - --advertise-kafka-addr PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+      - --smp
+      - '1'               # CPU 코어 1개 제한 (로컬 환경 부하 방지)
+      - --reserve-memory
+      - 0M                # 추가 예약 메모리 해제 (도커 환경 최적화)
+      - --overprovisioned # CPU 스레드 고정 안 함 (다른 컨테이너와 자원 공유)
+      - --node-id
+      - '1'
+      - --kafka-addr      # 브로커가 통신을 수신할 주소 (내부/외부)
+      - PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr # 클라이언트(Python, Flink)가 접속할 때 사용할 주소
+      - PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+      - --pandaproxy-addr # HTTP를 통해 데이터를 확인하는 프록시 설정
+      - PLAINTEXT://0.0.0.0:28082,OUTSIDE://0.0.0.0:8082
+      - --advertise-pandaproxy-addr
+      - PLAINTEXT://redpanda:28082,OUTSIDE://localhost:8082
+      - --rpc-addr        # Redpanda 노드 간 통신용 주소
+      - 0.0.0.0:33145
+      - --advertise-rpc-addr
+      - redpanda:33145
     ports:
-      - 9092:9092    # 외부용 (내 노트북의 Python 프로듀서가 접속)
-      - 29092:29092  # 내부용 (도커 내부의 Flink 컨테이너가 접속)
+      - 8082:8082         # HTTP Proxy 포트
+      - 9092:9092         # 내 노트북(Python) 접속용 Kafka 포트
+      - 28082:28082
+      - 29092:29092       # 도커 내부(Flink) 접속용 Kafka 포트
+
+  # 2. Flink JobManager: 클러스터의 '지휘자' (작업 스케줄링 및 UI 관리)
+  jobmanager:
+    build:
+      context: .
+      dockerfile: ./Dockerfile.flink # PyFlink 환경이 포함된 커스텀 이미지 빌드
+    image: pyflink-workshop
+    pull_policy: never    # 로컬에서 빌드한 이미지를 우선 사용
+    expose:
+      - "6123"            # TaskManager와 통신하기 위한 RPC 포트
+    ports:
+      - "8081:8081"       # Flink Web UI 접속 포트 (매우 중요!)
+    volumes:
+      - ./:/opt/flink/usrlib # 파이썬 라이브러리 경로 매핑
+      - ./src/:/opt/src      # 실제 실행할 소스코드 경로 매핑
+    command: jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        jobmanager.memory.process.size: 1600m # 지휘자가 사용할 메모리 할당
+
+  # 3. Flink TaskManager: 클러스터의 '일꾼' (실제 데이터 계산 수행)
+  taskmanager:
+    image: pyflink-workshop
+    pull_policy: never
+    expose:
+      - "6121"            # 데이터 전송용 포트
+      - "6122"            # RPC 통신용 포트
+    volumes:
+      - ./:/opt/flink/usrlib
+      - ./src/:/opt/src
+    depends_on:
+      - jobmanager        # 지휘자가 먼저 떠야 일꾼이 등록될 수 있음
+    command: taskmanager --taskmanager.registration.timeout 5 min
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.memory.process.size: 1728m
+        taskmanager.numberOfTaskSlots: 15 # 동시에 처리할 수 있는 작업 단위 (병렬성 결정)
+        parallelism.default: 3           # 기본 병렬 처리 수준
+
+  # 4. PostgreSQL: 최종 데이터 저장소
   postgres:
-    image: postgres:15 # 안정적인 15버전 추천
-    container_name: postgres
+    image: postgres:15    # 안정적인 15버전 사용 (18은 너무 최신이거나 실험적일 수 있음)
+    restart: on-failure   # 에러 나면 자동 재시작
     environment:
       - POSTGRES_DB=postgres
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
     ports:
-      - "5432:5432"
+      - "5432:5432"       # 외부 DB 툴(DBeaver 등) 접속 포트
