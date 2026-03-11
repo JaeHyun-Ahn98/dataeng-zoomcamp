@@ -463,3 +463,166 @@ docker compose down -v
 ```
 
 ---
+
+
+# 🚀 PyFlink 실시간 택시 데이터 파이프라인 구축 (Windows/Docker)
+
+이 프로젝트는 NYC 택시 데이터를 실시간으로 수집, 가공, 저장하는 엔드투엔드(End-to-End) 시스템입니다.
+
+---
+
+## 1. 프로젝트 아키텍처 및 인프라 구축
+
+모든 서비스는 도커 컨테이너로 격리되어 실행되며, 특히 Flink는 파이썬 라이브러리가 포함된 커스텀 이미지를 사용합니다.
+
+### 🏠 인프라 구성
+
+* **Redpanda (Kafka)**: 실시간 데이터 우편함.
+* **Flink (Job/Task Manager)**: 실시간 윈도우 집계 엔진.
+* **PostgreSQL**: 최종 결과 데이터베이스.
+
+### ⌨️ 인프라 실행 명령어
+
+```bash
+# 1. 프로젝트 워크숍 폴더로 이동
+cd 07-streaming/workshop
+
+# 2. 커스텀 이미지 빌드 및 컨테이너 실행
+docker compose up --build -d
+
+# 3. (중요) TaskManager 누락 시 수동 기동 (리소스 에러 방지)
+docker compose up -d taskmanager
+
+# 4. 전체 서비스 상태 확인
+docker compose ps
+
+```
+
+---
+
+## 2. 데이터 설계 및 생성 (Producer)
+
+외부의 `.parquet` 데이터를 읽어 Redpanda로 전송하는 단계입니다. `models.py`에서 정의된 `Ride` 데이터 클래스를 통해 데이터 규격을 맞췄습니다.
+
+### 📂 주요 코드 (`producer.py` & `models.py`)
+
+```python
+# [models.py] 데이터 규격 정의
+@dataclass
+class Ride:
+    PULocationID: int
+    DOLocationID: int
+    trip_distance: float
+    total_amount: float
+    tpep_pickup_datetime: int # 밀리초 단위 타임스탬프
+
+# [producer.py] 데이터 전송 로직
+df = pd.read_parquet(url, columns=columns).head(1000) # 1000개 데이터 로드
+
+for _, row in df.iterrows():
+    ride = ride_from_row(row) # Pandas row -> Ride 객체 변환
+    producer.send('rides', value=ride) # 'rides' 토픽으로 전송
+    time.sleep(0.01) # 실시간 흐름 시뮬레이션
+
+```
+
+### ⌨️ Producer 실행 명령어
+
+```bash
+# 로컬 터미널에서 실행
+uv run python src/producers/producer.py
+
+```
+
+---
+
+## 3. 실시간 처리 및 윈도우 집계 (Flink Job)
+
+Redpanda에서 스트리밍되는 데이터를 가져와 1시간 단위로 구역별 매출을 계산합니다.
+
+### 📂 주요 코드 (`aggregation_job.py`)
+
+이 코드는 SQL DDL을 사용하여 Kafka 소스와 JDBC(Postgres) 싱크를 정의합니다.
+
+```python
+# 1시간 단위 회전 윈도우(Tumble Window) 집계 쿼리
+t_env.execute_sql(f"""
+INSERT INTO {aggregated_table}
+SELECT
+    window_start,
+    PULocationID,
+    COUNT(*) AS num_trips,       -- 승차 횟수
+    SUM(total_amount) AS total_revenue -- 총 매출 합계
+FROM TABLE(
+    TUMBLE(TABLE {source_table}, DESCRIPTOR(event_timestamp), INTERVAL '1' HOUR)
+)
+GROUP BY window_start, PULocationID;
+""")
+
+```
+
+### ⌨️ Flink 잡 제출 명령어
+
+윈도우 Git Bash 환경의 경로 오류를 해결하기 위해 `MSYS_NO_PATHCONV` 옵션을 반드시 사용해야 합니다.
+
+```bash
+# 윈도우 경로 보정 옵션을 포함한 잡 제출
+MSYS_NO_PATHCONV=1 docker compose exec jobmanager /bin/bash -c \
+"PYTHONPATH=/opt/src ./bin/flink run -py /opt/src/job/aggregation_job.py -d"
+
+```
+
+---
+
+## 4. 데이터 저장 및 검증 (Consumer/DB)
+
+집계되지 않은 원본 데이터도 동시에 Postgres에 저장하여 검증합니다.
+
+### 📂 주요 코드 (`consumer_postgres.py`)
+
+```python
+for message in consumer:
+    ride = message.value
+    # 타임스탬프를 Python datetime으로 변환하여 DB 저장
+    pickup_dt = datetime.fromtimestamp(ride.tpep_pickup_datetime / 1000)
+    cur.execute(
+        "INSERT INTO processed_events (...) VALUES (%s, %s, %s, %s, %s)",
+        (ride.PULocationID, ride.DOLocationID, ride.trip_distance, ride.total_amount, pickup_dt)
+    )
+
+```
+
+### ⌨️ Consumer 실행 및 DB 확인 명령어
+
+```bash
+# 소비자 실행
+uv run python src/consumers/consumer_postgres.py
+
+# PostgreSQL 데이터 조회 (DBeaver 등에서 실행)
+SELECT * FROM processed_events_aggregated ORDER BY window_start DESC;
+
+```
+
+---
+
+## 5. 트러블슈팅 가이드 (Windows 환경 특이사항)
+
+우리가 프로젝트를 진행하며 맞닥뜨린 치명적인 문제들과 해결 방법입니다.
+
+| 문제 현상 (Error) | 상세 원인 | 해결책 (Action) |
+| --- | --- | --- |
+| **`NoSuchFileException`** | Git Bash가 윈도우 경로(C:/...)를 리눅스 경로로 오해함 | 명령어 앞에 `MSYS_NO_PATHCONV=1` 추가 |
+| **`UndefinedTable`** | Postgres 테이블이 물리적으로 존재하지 않음 | SQL 스크립트로 `CREATE TABLE` 먼저 실행 |
+| **`DatatypeMismatch`** | Flink의 `TIMESTAMP`와 DB의 `BIGINT` 타입 불일치 | DB 컬럼 타입을 `TIMESTAMP`로 통일 |
+| **`NoResourceAvailable`** | TaskManager 컨테이너가 죽었거나 슬롯이 부족함 | `docker compose up -d taskmanager` 재기동 및 슬롯 상향 |
+
+---
+
+## 6. 최종 결과 요약
+
+* **Flink Web UI (8081)**: Job 상태가 `RUNNING`이며 데이터가 실시간으로 소모됨을 확인.
+* **PostgreSQL**: `processed_events`와 `aggregated` 테이블에 각각 3,000건 이상의 데이터 적재 완료.
+* **검증 성공**: 과거 데이터 2,000건 + 실시간 생성 1,000건이 유실 없이 파이프라인을 통과함.
+
+---
+
